@@ -188,8 +188,10 @@ app.post('/api/chat', async (req, res) => {
 
     const genAI = getGenAI();
     
-    // Try to get the working model from a cache or just try the list
+    // Try the best available models found in the scan
     const modelsToTry = [
+      "gemini-2.5-flash",
+      "gemini-2.5-pro",
       "gemini-2.0-flash", 
       "gemini-1.5-flash", 
       "gemini-1.5-pro",
