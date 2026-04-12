@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Saathi — Your Thinking Partner</title>
+    <meta name="description" content="Saathi AI: Your wise, honest, and private thinking partner. Built for India, speaking your language, and respecting your privacy." />
+    <script>
+      // Shim process for libraries that expect it
+      window.process = { env: { NODE_ENV: 'production' } };
+      
+      // Global error handler to catch white screen issues
+      window.onerror = function(msg, url, line, col, error) {
+        var div = document.createElement('div');
+        div.style.position = 'fixed';
+        div.style.top = '0';
+        div.style.left = '0';
+        div.style.width = '100%';
+        div.style.height = '100%';
+        div.style.backgroundColor = 'white';
+        div.style.color = 'red';
+        div.style.padding = '20px';
+        div.style.zIndex = '10000';
+        div.style.overflow = 'auto';
+        div.style.fontFamily = 'monospace';
+        div.innerHTML = '<h1>Critical Error</h1>' +
+          '<p><strong>Message:</strong> ' + msg + '</p>' +
+          '<p><strong>URL:</strong> ' + url + '</p>' +
+          '<p><strong>Line:</strong> ' + line + ', <strong>Col:</strong> ' + col + '</p>' +
+          '<pre>' + (error && error.stack ? error.stack : 'No stack trace available') + '</pre>' +
+          '<button onclick="location.reload()" style="padding:10px;margin-top:20px;">Reload</button>';
+        document.body.appendChild(div);
+        return false;
+      };
+    </script>
+    <meta name="keywords" content="AI, India, Telugu, Hindi, Tamil, Privacy, Jyotish, Astrology, Mental Health, Guidance" />
+    <meta property="og:title" content="Saathi — Your Thinking Partner" />
+    <meta property="og:description" content="A wise elder who knows you, speaks your language, and tells you the truth with love." />
+    <meta property="og:image" content="https://picsum.photos/seed/saathi/1200/630" />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>✦</text></svg>">
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

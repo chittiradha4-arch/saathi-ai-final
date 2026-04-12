@@ -1,0 +1,71 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "Stores user settings and subscription status",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "User's display name" },
+        "email": { "type": "string", "format": "email", "description": "User's email address" },
+        "situation": { "type": "string", "description": "User's current life situation or nature" },
+        "voiceStyle": { "type": "string", "enum": ["v1", "v2", "v3", "v4"], "description": "Selected AI voice style" },
+        "freeMessagesUsed": { "type": "number", "description": "Count of free messages used" },
+        "isSubscribed": { "type": "boolean", "description": "Whether the user has an active subscription" },
+        "subscriptionTier": { "type": "string", "enum": ["none", "weekly", "monthly", "yearly"], "description": "Active subscription tier" },
+        "lastPaymentId": { "type": "string", "description": "ID of the last successful payment" },
+        "expiryDate": { "type": "string", "format": "date-time", "description": "Subscription expiry date" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Account creation timestamp" }
+      },
+      "required": ["name", "email", "freeMessagesUsed", "isSubscribed"]
+    },
+    "Payment": {
+      "title": "Payment Record",
+      "description": "Durable record of a payment transaction",
+      "type": "object",
+      "properties": {
+        "paymentId": { "type": "string" },
+        "orderId": { "type": "string" },
+        "userId": { "type": "string" },
+        "amount": { "type": "number" },
+        "currency": { "type": "string" },
+        "status": { "type": "string", "enum": ["created", "authorized", "captured", "failed", "refunded"] },
+        "gatewayStatus": { "type": "string" },
+        "method": { "type": "string" },
+        "tier": { "type": "string" },
+        "notesForCustomer": { "type": "string" },
+        "timeline": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "status": { "type": "string" },
+              "timestamp": { "type": "string", "format": "date-time" },
+              "message": { "type": "string" }
+            }
+          }
+        },
+        "reconciliation": {
+          "type": "object",
+          "properties": {
+            "lastCheckedAt": { "type": "string", "format": "date-time" },
+            "lastGatewayStatus": { "type": "string" },
+            "autoFixed": { "type": "boolean" }
+          }
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["paymentId", "userId", "amount", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "User" },
+      "description": "User profile document"
+    },
+    "/payments/{paymentId}": {
+      "schema": { "$ref": "Payment" },
+      "description": "Payment transaction record"
+    }
+  }
+}

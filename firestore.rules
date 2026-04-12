@@ -1,0 +1,112 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - name: string (required, 1-100 chars)
+    //   - email: string (required, email format)
+    //   - situation: string (optional, 0-2000 chars)
+    //   - voiceStyle: string (optional, enum: v1, v2, v3, v4)
+    //   - freeMessagesUsed: number (required, >= 0)
+    //   - isSubscribed: boolean (required)
+    //   - subscriptionTier: string (optional, enum: none, weekly, monthly, yearly)
+    //   - createdAt: timestamp (required)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+         (request.auth.token.email == "chitti.radha4@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['name', 'email', 'freeMessagesUsed', 'isSubscribed', 'createdAt']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             isValidEmail(data.email) &&
+             data.freeMessagesUsed is number && data.freeMessagesUsed >= 0 &&
+             data.isSubscribed is bool &&
+             (!('voiceStyle' in data) || data.voiceStyle in ['v1', 'v2', 'v3', 'v4']) &&
+             (!('subscriptionTier' in data) || data.subscriptionTier in ['none', 'weekly', 'monthly', 'yearly']) &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidUsageUpdate() {
+      let oldData = resource.data;
+      let newData = request.resource.data;
+      
+      // Client is NEVER allowed to change isSubscribed status
+      // This must be handled by the backend after payment verification
+      return newData.isSubscribed == oldData.isSubscribed && 
+             newData.subscriptionTier == oldData.subscriptionTier &&
+             (
+               (oldData.isSubscribed == true && newData.freeMessagesUsed == 0) ||
+               (oldData.isSubscribed == false && 
+                newData.freeMessagesUsed <= 3 && 
+                (newData.freeMessagesUsed == oldData.freeMessagesUsed + 1 || newData.freeMessagesUsed == oldData.freeMessagesUsed))
+             );
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      // Users can only read their own profile. PII protection.
+      allow read: if isOwner(userId) || isAdmin();
+      
+      // Users can create their own profile if it matches their auth data
+      allow create: if isOwner(userId) && 
+                      isValidUser(request.resource.data) && 
+                      request.resource.data.email == request.auth.token.email &&
+                      request.resource.data.freeMessagesUsed == 0 &&
+                      request.resource.data.isSubscribed == false;
+      
+      // Users can update their own profile, but cannot change their email or createdAt
+      allow update: if isOwner(userId) && 
+                      isValidUser(request.resource.data) &&
+                      request.resource.data.email == resource.data.email &&
+                      request.resource.data.createdAt == resource.data.createdAt &&
+                      isValidUsageUpdate();
+    }
+
+    match /payments/{paymentId} {
+      // Users can read their own payment records to see status
+      // 'list' permission is required for queries (where/orderBy)
+      allow read, list: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      // Only server (Admin SDK) can write to payments
+      allow write: if false;
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
