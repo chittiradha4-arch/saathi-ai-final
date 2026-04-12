@@ -20,6 +20,7 @@ const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const googleProvider = new GoogleAuthProvider();
+googleProvider.setCustomParameters({ prompt: 'select_account' });
 
 // Initialize Analytics & Performance (only in supported environments)
 export const analytics = typeof window !== 'undefined' ? getAnalytics(app) : null;
