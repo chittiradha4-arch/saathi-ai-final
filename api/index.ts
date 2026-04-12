@@ -65,6 +65,16 @@ app.use(express.json({
   }
 }));
 
+// Lazy Gemini initialization
+let genAIInstance: any = null;
+function getGenAI() {
+  const key = process.env.GEMINI_API_KEY || "";
+  if (!genAIInstance || genAIInstance.apiKey !== key) {
+    genAIInstance = new GoogleGenerativeAI(key);
+  }
+  return genAIInstance;
+}
+
 app.get('/api/debug-env', async (req, res) => {
   let saProjectId = "unknown";
   let saClientEmail = "unknown";
@@ -72,6 +82,7 @@ app.get('/api/debug-env', async (req, res) => {
   let firestoreError = null;
   let geminiStatus = "not_tested";
   let geminiError = null;
+  let availableModels: string[] = [];
 
   try {
     if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
@@ -84,7 +95,6 @@ app.get('/api/debug-env', async (req, res) => {
   try {
     const testDb = getDb();
     if (testDb) {
-      firestoreStatus = "initialized";
       firestoreStatus = "connected_to_client";
     }
   } catch (e: any) {
@@ -92,21 +102,40 @@ app.get('/api/debug-env', async (req, res) => {
     firestoreError = e.message;
   }
 
+  const geminiKey = process.env.GEMINI_API_KEY || "";
   try {
-    if (process.env.GEMINI_API_KEY) {
-      // Try a few variations of the model name to see which one works
-      // Including 2.0 Flash as the latest/best option
+    if (geminiKey) {
+      // Try to list models using raw fetch to bypass SDK limitations
+      try {
+        const listUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${geminiKey}`;
+        const listRes = await fetch(listUrl);
+        const listData = await listRes.json();
+        if (listData.models) {
+          availableModels = listData.models.map((m: any) => m.name.replace('models/', ''));
+          geminiStatus = `models_found_${availableModels.length}`;
+        } else if (listData.error) {
+          geminiStatus = `list_failed_${listData.error.status}`;
+          geminiError = listData.error.message;
+        }
+      } catch (e: any) {
+        console.log("List models failed:", e.message);
+      }
+
+      const genAI = getGenAI();
       const modelsToTry = [
         "gemini-2.0-flash", 
         "gemini-1.5-flash", 
-        "gemini-1.5-flash-latest", 
         "gemini-1.5-pro",
-        "gemini-pro",
-        "gemini-1.0-pro"
+        "gemini-pro"
       ];
-      let lastErr = null;
       
-      for (const m of modelsToTry) {
+      // If we found models from the list, try those first
+      const finalModelsToTry = availableModels.length > 0 
+        ? [...new Set([...availableModels.filter(m => m.includes('flash') || m.includes('pro')), ...modelsToTry])]
+        : modelsToTry;
+
+      let lastErr = null;
+      for (const m of finalModelsToTry) {
         try {
           const testModel = genAI.getGenerativeModel({ model: m });
           const result = await testModel.generateContent("hi");
@@ -135,63 +164,41 @@ app.get('/api/debug-env', async (req, res) => {
 
   res.json({
     hasServiceAccountKey: !!process.env.FIREBASE_SERVICE_ACCOUNT_KEY,
-    serviceAccountKeyLength: process.env.FIREBASE_SERVICE_ACCOUNT_KEY?.length || 0,
     saProjectId,
     saClientEmail,
-    envProjectId: process.env.VITE_FIREBASE_PROJECT_ID,
-    databaseId: process.env.VITE_FIREBASE_DATABASE_ID,
     firestoreStatus,
     firestoreError,
     geminiStatus,
     geminiError,
-    nodeEnv: process.env.NODE_ENV,
+    availableModels,
+    geminiKeyPrefix: geminiKey ? geminiKey.substring(0, 8) + "..." : "missing",
+    geminiKeyLength: geminiKey.length,
     isVercel: !!process.env.VERCEL,
-    hasGeminiKey: !!process.env.GEMINI_API_KEY,
-    hasRazorpaySecret: !!process.env.RAZORPAY_KEY_SECRET
+    hasGeminiKey: !!geminiKey,
   });
 });
 
-// 1. Gemini Proxy
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
-
 app.post('/api/chat', async (req, res) => {
   try {
-    const { contents, systemInstruction, model } = req.body;
-    if (!process.env.GEMINI_API_KEY) {
+    const { contents, systemInstruction } = req.body;
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (!geminiKey) {
       return res.status(500).json({ error: "GEMINI_API_KEY not set on server" });
     }
 
-    // Use a stable model name with fallback (Primary is now 2.0 Flash)
-    const primaryModel = "gemini-2.0-flash";
-    const fallbackModels = [
+    const genAI = getGenAI();
+    
+    // Try to get the working model from a cache or just try the list
+    const modelsToTry = [
+      "gemini-2.0-flash", 
       "gemini-1.5-flash", 
-      "gemini-1.5-flash-latest", 
       "gemini-1.5-pro",
-      "gemini-pro",
-      "gemini-1.0-pro"
+      "gemini-pro"
     ];
     
     let lastError = null;
-    
-    // Try primary first
-    try {
-      console.log(`Attempting Gemini with: ${primaryModel}`);
-      const aiModel = genAI.getGenerativeModel({ 
-        model: primaryModel,
-        systemInstruction: systemInstruction
-      });
-      const result = await aiModel.generateContent({ contents });
-      const response = await result.response;
-      return res.json({ text: response.text() });
-    } catch (err: any) {
-      lastError = err;
-      console.warn(`Primary model ${primaryModel} failed:`, err.message);
-    }
-
-    // Try fallbacks if primary fails
-    for (const modelName of fallbackModels) {
+    for (const modelName of modelsToTry) {
       try {
-        console.log(`Attempting fallback Gemini with: ${modelName}`);
         const aiModel = genAI.getGenerativeModel({ 
           model: modelName,
           systemInstruction: systemInstruction
@@ -201,13 +208,12 @@ app.post('/api/chat', async (req, res) => {
         return res.json({ text: response.text() });
       } catch (err: any) {
         lastError = err;
-        console.warn(`Fallback model ${modelName} failed:`, err.message);
+        console.warn(`Model ${modelName} failed:`, err.message);
       }
     }
     
-    throw lastError || new Error("All Gemini models failed to respond. Please check if your API key has access to these models.");
+    throw lastError || new Error("All Gemini models failed. Please check your API key permissions.");
   } catch (error: any) {
-    console.error("Gemini Error:", error);
     res.status(500).json({ error: error.message });
   }
 });
