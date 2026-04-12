@@ -96,7 +96,14 @@ app.get('/api/debug-env', async (req, res) => {
     if (process.env.GEMINI_API_KEY) {
       // Try a few variations of the model name to see which one works
       // Including 2.0 Flash as the latest/best option
-      const modelsToTry = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-pro"];
+      const modelsToTry = [
+        "gemini-2.0-flash", 
+        "gemini-1.5-flash", 
+        "gemini-1.5-flash-latest", 
+        "gemini-1.5-pro",
+        "gemini-pro",
+        "gemini-1.0-pro"
+      ];
       let lastErr = null;
       
       for (const m of modelsToTry) {
@@ -156,7 +163,13 @@ app.post('/api/chat', async (req, res) => {
 
     // Use a stable model name with fallback (Primary is now 2.0 Flash)
     const primaryModel = "gemini-2.0-flash";
-    const fallbackModels = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-pro"];
+    const fallbackModels = [
+      "gemini-1.5-flash", 
+      "gemini-1.5-flash-latest", 
+      "gemini-1.5-pro",
+      "gemini-pro",
+      "gemini-1.0-pro"
+    ];
     
     let lastError = null;
     
@@ -192,7 +205,7 @@ app.post('/api/chat', async (req, res) => {
       }
     }
     
-    throw lastError || new Error("All Gemini models failed to respond.");
+    throw lastError || new Error("All Gemini models failed to respond. Please check if your API key has access to these models.");
   } catch (error: any) {
     console.error("Gemini Error:", error);
     res.status(500).json({ error: error.message });
