@@ -4,19 +4,45 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import admin from 'firebase-admin';
+import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 
-// Initialize Firebase Admin
-if (!admin.apps.length) {
-  try {
-    admin.initializeApp({
-      projectId: process.env.VITE_FIREBASE_PROJECT_ID
-    });
-  } catch (e) {
-    console.error("Firebase Admin init failed.", e);
+// Lazy Firebase Admin initialization
+let db: any = null;
+
+function getDb() {
+  if (db) return db;
+
+  if (!admin.apps.length) {
+    const serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+    const projectId = process.env.VITE_FIREBASE_PROJECT_ID || "saatiai-e39a2";
+
+    if (serviceAccountKey) {
+      try {
+        const serviceAccount = JSON.parse(serviceAccountKey);
+        admin.initializeApp({
+          credential: admin.credential.cert(serviceAccount),
+          projectId: projectId
+        });
+        console.log("Firebase Admin initialized with service account.");
+      } catch (parseErr: any) {
+        console.error("FIREBASE_SERVICE_ACCOUNT_KEY is not a valid JSON string:", parseErr.message);
+        throw new Error("Invalid FIREBASE_SERVICE_ACCOUNT_KEY format in Vercel settings.");
+      }
+    } else {
+      // If on Vercel, we MUST have a service account key
+      if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
+        throw new Error("Firebase credentials missing. Please add FIREBASE_SERVICE_ACCOUNT_KEY to your Vercel Environment Variables.");
+      }
+      // Local fallback
+      admin.initializeApp({ projectId });
+    }
   }
+
+  const databaseId = process.env.VITE_FIREBASE_DATABASE_ID || "ai-studio-a3a12be1-faa4-48ca-9fa0-f8e181011aa7";
+  db = (databaseId && databaseId !== '(default)') ? getFirestore(databaseId) : getFirestore();
+  return db;
 }
 
-const db = admin.firestore();
 const app = express();
 
 app.use(cors());
@@ -25,6 +51,19 @@ app.use(express.json({
     req.rawBody = buf;
   }
 }));
+
+app.get('/api/debug-env', (req, res) => {
+  res.json({
+    hasServiceAccountKey: !!process.env.FIREBASE_SERVICE_ACCOUNT_KEY,
+    serviceAccountKeyLength: process.env.FIREBASE_SERVICE_ACCOUNT_KEY?.length || 0,
+    projectId: process.env.VITE_FIREBASE_PROJECT_ID,
+    databaseId: process.env.VITE_FIREBASE_DATABASE_ID,
+    nodeEnv: process.env.NODE_ENV,
+    isVercel: !!process.env.VERCEL,
+    hasGeminiKey: !!process.env.GEMINI_API_KEY,
+    hasRazorpaySecret: !!process.env.RAZORPAY_KEY_SECRET
+  });
+});
 
 // 1. Gemini Proxy
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
@@ -72,21 +111,27 @@ app.post('/api/create-order', async (req, res) => {
     const order = await razorpay.orders.create(options);
     
     // Persist to cloud
-    if (db) {
-      await db.collection('payments').doc(order.id).set({
-        orderId: order.id,
-        userId: userId || "anonymous",
-        amount: Number(amount),
-        currency: currency || "INR",
-        status: 'created',
-        tier: tier || "monthly",
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        notesForCustomer: "Order created; awaiting payment.",
-        timeline: [
-          { status: 'created', timestamp: new Date().toISOString(), message: "Order created in system." }
-        ]
-      });
+    const firestore = getDb();
+    if (firestore) {
+      try {
+        await firestore.collection('payments').doc(order.id).set({
+          orderId: order.id,
+          userId: userId || "anonymous",
+          amount: Number(amount),
+          currency: currency || "INR",
+          status: 'created',
+          tier: tier || "monthly",
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+          notesForCustomer: "Order created; awaiting payment.",
+          timeline: [
+            { status: 'created', timestamp: new Date().toISOString(), message: "Order created in system." }
+          ]
+        });
+      } catch (dbErr: any) {
+        console.error("Firestore Save Error (Order):", dbErr.message);
+        // Don't fail the whole request if just logging fails, but on Vercel we need this
+      }
     }
     
     res.json(order);
@@ -113,6 +158,7 @@ app.post('/api/razorpay-webhook', async (req: any, res) => {
 
   const event = req.body;
   try {
+    const firestore = getDb();
     if (event.event === 'payment.captured') {
       const payment = event.payload.payment.entity;
       const orderId = payment.order_id;
@@ -120,33 +166,37 @@ app.post('/api/razorpay-webhook', async (req: any, res) => {
       const userId = payment.notes.userId;
       const tier = payment.notes.tier;
 
-      if (db && userId && userId !== 'anonymous') {
-        await db.collection('payments').doc(orderId).set({
-          paymentId: paymentId,
-          status: 'captured',
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          timeline: admin.firestore.FieldValue.arrayUnion({
+      if (firestore && userId && userId !== 'anonymous') {
+        try {
+          await firestore.collection('payments').doc(orderId).set({
+            paymentId: paymentId,
             status: 'captured',
-            timestamp: new Date().toISOString(),
-            message: "Payment captured via Webhook."
-          })
-        }, { merge: true });
+            updatedAt: FieldValue.serverTimestamp(),
+            timeline: FieldValue.arrayUnion({
+              status: 'captured',
+              timestamp: new Date().toISOString(),
+              message: "Payment captured via Webhook."
+            })
+          }, { merge: true });
 
-        const now = new Date();
-        let expiryDate = new Date();
-        if (tier.includes('weekly')) expiryDate.setDate(now.getDate() + 7);
-        else if (tier.includes('monthly')) expiryDate.setDate(now.getDate() + 30);
-        else if (tier.includes('yearly')) expiryDate.setDate(now.getDate() + 365);
-        else expiryDate.setDate(now.getDate() + 30);
+          const now = new Date();
+          let expiryDate = new Date();
+          if (tier.includes('weekly')) expiryDate.setDate(now.getDate() + 7);
+          else if (tier.includes('monthly')) expiryDate.setDate(now.getDate() + 30);
+          else if (tier.includes('yearly')) expiryDate.setDate(now.getDate() + 365);
+          else expiryDate.setDate(now.getDate() + 30);
 
-        await db.collection('users').doc(userId).set({
-          isSubscribed: true,
-          subscriptionTier: tier,
-          freeMessagesUsed: 0,
-          lastPaymentId: paymentId,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          expiryDate: admin.firestore.Timestamp.fromDate(expiryDate)
-        }, { merge: true });
+          await firestore.collection('users').doc(userId).set({
+            isSubscribed: true,
+            subscriptionTier: tier,
+            freeMessagesUsed: 0,
+            lastPaymentId: paymentId,
+            updatedAt: FieldValue.serverTimestamp(),
+            expiryDate: Timestamp.fromDate(expiryDate)
+          }, { merge: true });
+        } catch (dbErr: any) {
+          console.error("Firestore Webhook Error:", dbErr.message);
+        }
       }
     }
     res.json({ status: 'ok' });
@@ -171,34 +221,40 @@ app.post('/api/verify-payment', async (req, res) => {
     const generated_signature = hmac.digest('hex');
 
     if (generated_signature.toLowerCase() === razorpay_signature.toLowerCase()) {
-      if (userId && db) {
-        const tier = planName.toLowerCase();
-        const now = new Date();
-        let expiryDate = new Date();
-        if (tier.includes('weekly')) expiryDate.setDate(now.getDate() + 7);
-        else if (tier.includes('monthly')) expiryDate.setDate(now.getDate() + 30);
-        else if (tier.includes('yearly')) expiryDate.setDate(now.getDate() + 365);
-        else expiryDate.setDate(now.getDate() + 30);
+      const firestore = getDb();
+      if (userId && firestore) {
+        try {
+          const tier = planName.toLowerCase();
+          const now = new Date();
+          let expiryDate = new Date();
+          if (tier.includes('weekly')) expiryDate.setDate(now.getDate() + 7);
+          else if (tier.includes('monthly')) expiryDate.setDate(now.getDate() + 30);
+          else if (tier.includes('yearly')) expiryDate.setDate(now.getDate() + 365);
+          else expiryDate.setDate(now.getDate() + 30);
 
-        await db.collection('payments').doc(razorpay_order_id).set({
-          paymentId: razorpay_payment_id,
-          status: 'captured',
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          timeline: admin.firestore.FieldValue.arrayUnion({
+          await firestore.collection('payments').doc(razorpay_order_id).set({
+            paymentId: razorpay_payment_id,
             status: 'captured',
-            timestamp: new Date().toISOString(),
-            message: "Payment verified via client."
-          })
-        }, { merge: true });
+            updatedAt: FieldValue.serverTimestamp(),
+            timeline: FieldValue.arrayUnion({
+              status: 'captured',
+              timestamp: new Date().toISOString(),
+              message: "Payment verified via client."
+            })
+          }, { merge: true });
 
-        await db.collection('users').doc(userId).set({
-          isSubscribed: true,
-          subscriptionTier: tier,
-          freeMessagesUsed: 0,
-          lastPaymentId: razorpay_payment_id,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          expiryDate: admin.firestore.Timestamp.fromDate(expiryDate)
-        }, { merge: true });
+          await firestore.collection('users').doc(userId).set({
+            isSubscribed: true,
+            subscriptionTier: tier,
+            freeMessagesUsed: 0,
+            lastPaymentId: razorpay_payment_id,
+            updatedAt: FieldValue.serverTimestamp(),
+            expiryDate: Timestamp.fromDate(expiryDate)
+          }, { merge: true });
+        } catch (dbErr: any) {
+          console.error("Firestore Verification Error:", dbErr.message);
+          throw new Error("Payment verified but database update failed. Please contact support.");
+        }
       }
       res.json({ status: 'ok' });
     } else {
@@ -224,15 +280,21 @@ app.post('/api/verify-manual-payment', async (req, res) => {
       else if (tier.includes('yearly')) expiryDate.setDate(now.getDate() + 365);
       else expiryDate.setDate(now.getDate() + 30);
 
-      if (db) {
-        await db.collection('users').doc(userId).set({
-          isSubscribed: true,
-          subscriptionTier: tier,
-          freeMessagesUsed: 0,
-          lastPaymentId: paymentId,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          expiryDate: admin.firestore.Timestamp.fromDate(expiryDate)
-        }, { merge: true });
+      const firestore = getDb();
+      if (firestore) {
+        try {
+          await firestore.collection('users').doc(userId).set({
+            isSubscribed: true,
+            subscriptionTier: tier,
+            freeMessagesUsed: 0,
+            lastPaymentId: paymentId,
+            updatedAt: FieldValue.serverTimestamp(),
+            expiryDate: Timestamp.fromDate(expiryDate)
+          }, { merge: true });
+        } catch (dbErr: any) {
+          console.error("Firestore Manual Verify Error:", dbErr.message);
+          throw new Error("Payment found but database update failed.");
+        }
       }
       res.json({ status: 'ok', expiryDate: expiryDate.toISOString() });
     } else {

@@ -7,6 +7,7 @@ import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 import admin from 'firebase-admin';
+import { getFirestore } from 'firebase-admin/firestore';
 import fs from 'fs';
 
 dotenv.config();
@@ -27,9 +28,16 @@ let db: any;
 try {
   const projectId = process.env.VITE_FIREBASE_PROJECT_ID || config.projectId;
   const databaseId = config.firestoreDatabaseId || "(default)";
+  const serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
   
   if (!admin.apps.length) {
-    if (projectId) {
+    if (serviceAccountKey) {
+      const serviceAccount = JSON.parse(serviceAccountKey);
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount)
+      });
+      console.log("Firebase Admin initialized with service account.");
+    } else if (projectId) {
       admin.initializeApp({
         projectId: projectId
       });
@@ -42,11 +50,16 @@ try {
   if (admin.apps.length) {
     // Try to initialize firestore. If it fails, fallback to default.
     try {
-      db = admin.firestore(config.firestoreDatabaseId || undefined);
-      console.log("Firestore initialized. Database:", databaseId);
+      if (config.firestoreDatabaseId && config.firestoreDatabaseId !== '(default)') {
+        db = getFirestore(config.firestoreDatabaseId);
+        console.log("Firestore initialized. Database:", config.firestoreDatabaseId);
+      } else {
+        db = getFirestore();
+        console.log("Firestore initialized. Database: (default)");
+      }
     } catch (fErr) {
       console.error("Failed to init named Firestore, falling back to default:", fErr);
-      db = admin.firestore();
+      db = getFirestore();
     }
   }
 } catch (e) {
