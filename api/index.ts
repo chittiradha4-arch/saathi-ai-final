@@ -94,12 +94,29 @@ app.get('/api/debug-env', async (req, res) => {
 
   try {
     if (process.env.GEMINI_API_KEY) {
-      const testModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-      // Just a very small test
-      const result = await testModel.generateContent("hi");
-      const response = await result.response;
-      if (response.text()) {
-        geminiStatus = "working";
+      // Try a few variations of the model name to see which one works
+      // Including 2.0 Flash as the latest/best option
+      const modelsToTry = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-pro"];
+      let lastErr = null;
+      
+      for (const m of modelsToTry) {
+        try {
+          const testModel = genAI.getGenerativeModel({ model: m });
+          const result = await testModel.generateContent("hi");
+          const response = await result.response;
+          if (response.text()) {
+            geminiStatus = `working_with_${m}`;
+            geminiError = null;
+            break;
+          }
+        } catch (e: any) {
+          lastErr = e.message;
+          geminiStatus = `failed_with_${m}`;
+        }
+      }
+      
+      if (geminiStatus.startsWith('failed')) {
+        geminiError = lastErr;
       }
     } else {
       geminiStatus = "missing_key";
@@ -137,14 +154,45 @@ app.post('/api/chat', async (req, res) => {
       return res.status(500).json({ error: "GEMINI_API_KEY not set on server" });
     }
 
-    const aiModel = genAI.getGenerativeModel({ 
-      model: model || "gemini-1.5-flash",
-      systemInstruction: systemInstruction
-    });
+    // Use a stable model name with fallback (Primary is now 2.0 Flash)
+    const primaryModel = "gemini-2.0-flash";
+    const fallbackModels = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-pro"];
+    
+    let lastError = null;
+    
+    // Try primary first
+    try {
+      console.log(`Attempting Gemini with: ${primaryModel}`);
+      const aiModel = genAI.getGenerativeModel({ 
+        model: primaryModel,
+        systemInstruction: systemInstruction
+      });
+      const result = await aiModel.generateContent({ contents });
+      const response = await result.response;
+      return res.json({ text: response.text() });
+    } catch (err: any) {
+      lastError = err;
+      console.warn(`Primary model ${primaryModel} failed:`, err.message);
+    }
 
-    const result = await aiModel.generateContent({ contents });
-    const response = await result.response;
-    res.json({ text: response.text() });
+    // Try fallbacks if primary fails
+    for (const modelName of fallbackModels) {
+      try {
+        console.log(`Attempting fallback Gemini with: ${modelName}`);
+        const aiModel = genAI.getGenerativeModel({ 
+          model: modelName,
+          systemInstruction: systemInstruction
+        });
+        const result = await aiModel.generateContent({ contents });
+        const response = await result.response;
+        return res.json({ text: response.text() });
+      } catch (err: any) {
+        lastError = err;
+        console.warn(`Fallback model ${modelName} failed:`, err.message);
+      }
+    }
+    
+    throw lastError || new Error("All Gemini models failed to respond.");
   } catch (error: any) {
     console.error("Gemini Error:", error);
     res.status(500).json({ error: error.message });

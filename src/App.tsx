@@ -489,7 +489,7 @@ export default function App() {
 
   const showToast = (m: string) => {
     setToast(m);
-    setTimeout(() => setToast(''), 3000);
+    setTimeout(() => setToast(''), 10000); // Increased to 10 seconds
   };
 
   const drawSG = () => {
