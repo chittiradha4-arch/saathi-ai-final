@@ -12,6 +12,7 @@ let db: any = null;
 function getDb() {
   if (db) return db;
 
+  let appInstance;
   if (!admin.apps.length) {
     const serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
     const projectId = process.env.VITE_FIREBASE_PROJECT_ID || "saatiai-e39a2";
@@ -24,14 +25,14 @@ function getDb() {
           serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
         }
         
-        admin.initializeApp({
+        appInstance = admin.initializeApp({
           credential: admin.credential.cert(serviceAccount),
           projectId: projectId
         });
         console.log("Firebase Admin initialized with service account.");
       } catch (parseErr: any) {
         console.error("FIREBASE_SERVICE_ACCOUNT_KEY is not a valid JSON string:", parseErr.message);
-        throw new Error("Invalid FIREBASE_SERVICE_ACCOUNT_KEY format in Vercel settings.");
+        throw new Error("Invalid FIREBASE_SERVICE_ACCOUNT_KEY format: " + parseErr.message);
       }
     } else {
       // If on Vercel, we MUST have a service account key
@@ -39,13 +40,20 @@ function getDb() {
         throw new Error("Firebase credentials missing. Please add FIREBASE_SERVICE_ACCOUNT_KEY to your Vercel Environment Variables.");
       }
       // Local fallback
-      admin.initializeApp({ projectId });
+      appInstance = admin.initializeApp({ projectId });
     }
+  } else {
+    appInstance = admin.apps[0];
   }
 
   const databaseId = process.env.VITE_FIREBASE_DATABASE_ID || "ai-studio-a3a12be1-faa4-48ca-9fa0-f8e181011aa7";
-  db = (databaseId && databaseId !== '(default)') ? getFirestore(databaseId) : getFirestore();
-  return db;
+  try {
+    db = (databaseId && databaseId !== '(default)') ? getFirestore(appInstance!, databaseId) : getFirestore(appInstance!);
+    return db;
+  } catch (err: any) {
+    console.error("Firestore getFirestore failed:", err.message);
+    throw err;
+  }
 }
 
 const app = express();
@@ -57,9 +65,14 @@ app.use(express.json({
   }
 }));
 
-app.get('/api/debug-env', (req, res) => {
+app.get('/api/debug-env', async (req, res) => {
   let saProjectId = "unknown";
   let saClientEmail = "unknown";
+  let firestoreStatus = "not_tested";
+  let firestoreError = null;
+  let geminiStatus = "not_tested";
+  let geminiError = null;
+
   try {
     if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
       const sa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
@@ -68,6 +81,34 @@ app.get('/api/debug-env', (req, res) => {
     }
   } catch (e) {}
 
+  try {
+    const testDb = getDb();
+    if (testDb) {
+      firestoreStatus = "initialized";
+      firestoreStatus = "connected_to_client";
+    }
+  } catch (e: any) {
+    firestoreStatus = "failed";
+    firestoreError = e.message;
+  }
+
+  try {
+    if (process.env.GEMINI_API_KEY) {
+      const testModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      // Just a very small test
+      const result = await testModel.generateContent("hi");
+      const response = await result.response;
+      if (response.text()) {
+        geminiStatus = "working";
+      }
+    } else {
+      geminiStatus = "missing_key";
+    }
+  } catch (e: any) {
+    geminiStatus = "failed";
+    geminiError = e.message;
+  }
+
   res.json({
     hasServiceAccountKey: !!process.env.FIREBASE_SERVICE_ACCOUNT_KEY,
     serviceAccountKeyLength: process.env.FIREBASE_SERVICE_ACCOUNT_KEY?.length || 0,
@@ -75,6 +116,10 @@ app.get('/api/debug-env', (req, res) => {
     saClientEmail,
     envProjectId: process.env.VITE_FIREBASE_PROJECT_ID,
     databaseId: process.env.VITE_FIREBASE_DATABASE_ID,
+    firestoreStatus,
+    firestoreError,
+    geminiStatus,
+    geminiError,
     nodeEnv: process.env.NODE_ENV,
     isVercel: !!process.env.VERCEL,
     hasGeminiKey: !!process.env.GEMINI_API_KEY,

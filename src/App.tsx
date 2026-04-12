@@ -687,7 +687,7 @@ export default function App() {
       if (errMsg.includes("abort")) {
         showToast("AI is taking too long. Please try again.");
       } else {
-        showToast(`Saathi is resting. Please try again in a moment.`);
+        showToast(`Saathi Error: ${errMsg}`);
       }
     } finally {
       setIsBusy(false);
