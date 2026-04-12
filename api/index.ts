@@ -19,6 +19,11 @@ function getDb() {
     if (serviceAccountKey) {
       try {
         const serviceAccount = JSON.parse(serviceAccountKey);
+        // Fix for Vercel newline escaping in private keys
+        if (serviceAccount.private_key) {
+          serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+        }
+        
         admin.initializeApp({
           credential: admin.credential.cert(serviceAccount),
           projectId: projectId
@@ -53,10 +58,22 @@ app.use(express.json({
 }));
 
 app.get('/api/debug-env', (req, res) => {
+  let saProjectId = "unknown";
+  let saClientEmail = "unknown";
+  try {
+    if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
+      const sa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+      saProjectId = sa.project_id;
+      saClientEmail = sa.client_email;
+    }
+  } catch (e) {}
+
   res.json({
     hasServiceAccountKey: !!process.env.FIREBASE_SERVICE_ACCOUNT_KEY,
     serviceAccountKeyLength: process.env.FIREBASE_SERVICE_ACCOUNT_KEY?.length || 0,
-    projectId: process.env.VITE_FIREBASE_PROJECT_ID,
+    saProjectId,
+    saClientEmail,
+    envProjectId: process.env.VITE_FIREBASE_PROJECT_ID,
     databaseId: process.env.VITE_FIREBASE_DATABASE_ID,
     nodeEnv: process.env.NODE_ENV,
     isVercel: !!process.env.VERCEL,
