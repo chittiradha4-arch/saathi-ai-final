@@ -54,6 +54,7 @@ service cloud.firestore {
              data.isSubscribed is bool &&
              (!('voiceStyle' in data) || data.voiceStyle in ['v1', 'v2', 'v3', 'v4']) &&
              (!('subscriptionTier' in data) || data.subscriptionTier in ['none', 'weekly', 'monthly', 'yearly']) &&
+             (!('situation' in data) || (data.situation is string && data.situation.size() <= 2000)) &&
              data.createdAt is timestamp;
     }
 

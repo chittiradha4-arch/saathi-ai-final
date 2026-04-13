@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import Anthropic from '@anthropic-ai/sdk';
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import admin from 'firebase-admin';
@@ -73,6 +74,16 @@ function getGenAI() {
     genAIInstance = new GoogleGenerativeAI(key);
   }
   return genAIInstance;
+}
+
+// Lazy Anthropic initialization
+let anthropicInstance: any = null;
+function getAnthropic() {
+  const key = process.env.ANTHROPIC_API_KEY || "";
+  if (!anthropicInstance || anthropicInstance.apiKey !== key) {
+    anthropicInstance = new Anthropic({ apiKey: key });
+  }
+  return anthropicInstance;
 }
 
 app.get('/api/debug-env', async (req, res) => {
@@ -175,6 +186,7 @@ app.get('/api/debug-env', async (req, res) => {
     geminiKeyLength: geminiKey.length,
     isVercel: !!process.env.VERCEL,
     hasGeminiKey: !!geminiKey,
+    hasAnthropicKey: !!process.env.ANTHROPIC_API_KEY,
   });
 });
 
@@ -188,33 +200,75 @@ app.post('/api/chat', async (req, res) => {
 
     const genAI = getGenAI();
     
-    // Try the best available models found in the scan
+    // Prioritize stable models that are widely available
     const modelsToTry = [
-      "gemini-2.5-flash",
-      "gemini-2.5-pro",
-      "gemini-2.0-flash", 
       "gemini-1.5-flash", 
+      "gemini-1.5-flash-latest",
+      "gemini-2.0-flash", 
       "gemini-1.5-pro",
-      "gemini-pro"
+      "gemini-1.5-pro-latest",
+      "gemini-pro",
+      "gemini-pro-latest"
     ];
     
     let lastError = null;
+    let successfulModel = "";
+
     for (const modelName of modelsToTry) {
       try {
+        console.log(`[Chat] Attempting model: ${modelName}`);
         const aiModel = genAI.getGenerativeModel({ 
           model: modelName,
           systemInstruction: systemInstruction
         });
         const result = await aiModel.generateContent({ contents });
         const response = await result.response;
-        return res.json({ text: response.text() });
+        const text = response.text();
+        if (text) {
+          successfulModel = modelName;
+          console.log(`[Chat] Success with model: ${modelName}`);
+          return res.json({ text, modelUsed: modelName });
+        }
       } catch (err: any) {
         lastError = err;
-        console.warn(`Model ${modelName} failed:`, err.message);
+        console.warn(`[Chat] Model ${modelName} failed:`, err.message);
+        // If it's a 404, we definitely want to try the next one
+        // If it's a 429 (Rate Limit), we might also want to try another one
       }
     }
     
-    throw lastError || new Error("All Gemini models failed. Please check your API key permissions.");
+    // FINAL BULLETPROOF FALLBACK: Anthropic (Claude)
+    if (process.env.ANTHROPIC_API_KEY) {
+      try {
+        console.log(`[Chat] Gemini failed. Attempting Claude fallback...`);
+        const anthropic = getAnthropic();
+        
+        // Convert Gemini contents to Anthropic messages
+        const messages = contents.map((c: any) => ({
+          role: c.role === 'model' ? 'assistant' : 'user',
+          content: c.parts[0].text
+        }));
+
+        const response = await anthropic.messages.create({
+          model: "claude-3-5-sonnet-20241022",
+          max_tokens: 1024,
+          system: systemInstruction,
+          messages: messages,
+        });
+
+        const text = response.content[0].type === 'text' ? response.content[0].text : "";
+        if (text) {
+          console.log(`[Chat] Success with Claude fallback!`);
+          return res.json({ text, modelUsed: "claude-3-5-sonnet" });
+        }
+      } catch (err: any) {
+        console.error(`[Chat] Claude fallback also failed:`, err.message);
+        lastError = err;
+      }
+    }
+    
+    console.error("[Chat] All models failed. Last error:", lastError?.message);
+    throw lastError || new Error("All Gemini models failed. Please check your API key permissions and quota.");
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
