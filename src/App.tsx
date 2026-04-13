@@ -4,6 +4,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import LandingPage from './LandingPage';
 import LegalModal from './components/LegalModals';
+import Anthropic from '@anthropic-ai/sdk';
+import { generateAIChatResponse } from './services/aiService';
 import { 
   auth, db, googleProvider, signInWithPopup, onAuthStateChanged, 
   doc, getDoc, setDoc, updateDoc, onSnapshot, serverTimestamp, User,
@@ -96,6 +98,7 @@ export default function App() {
   const [messages, setMessages] = useState<any[]>([]);
   const [input, setInput] = useState('');
   const [isBusy, setIsBusy] = useState(false);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [freeCount, setFreeCount] = useState(0);
   const [subscribed, setSubscribed] = useState(false);
   const [subTier, setSubTier] = useState('');
@@ -262,6 +265,8 @@ export default function App() {
     }
   };
   const handleLogin = async () => {
+    if (isLoggingIn) return null;
+    setIsLoggingIn(true);
     try {
       const result = await signInWithPopup(auth, googleProvider);
       if (analytics) logEvent(analytics, 'login_success', { method: 'google' });
@@ -272,10 +277,15 @@ export default function App() {
         showToast("Login popup was blocked. Please allow popups for this site.");
       } else if (err.code === 'auth/unauthorized-domain') {
         showToast("This domain is not authorized in Firebase. Please add it to Authorized Domains.");
+      } else if (err.code === 'auth/cancelled-popup-request' || err.code === 'auth/popup-closed-by-user') {
+        // User closed the popup, no need for a scary error
+        console.log("Login cancelled by user.");
       } else {
         showToast(`Login failed: ${err.message || 'Please try again.'}`);
       }
       return null;
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
@@ -633,72 +643,132 @@ export default function App() {
         history.shift();
       }
 
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
+      const fullPrompt = `You are talking to ${profile.name}. 
+      Their current life situation/nature: "${profile.sit}". 
+      Your voice style: ${profile.voice}.
+      
+      ${systemPrompt || SYSTEM_PROMPT}
+      
+      CRITICAL: You MUST respond ONLY in ${targetLangName}. Stay in character as Saathi at all times.`;
 
-      const chatRes = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        body: JSON.stringify({
-          contents: [
-            ...history.map(h => ({ role: h.role, parts: h.parts })),
-            { role: 'user', parts: [{ text: msg }] }
-          ],
-          systemInstruction: `You are talking to ${profile.name}. 
-          Their current life situation/nature: "${profile.sit}". 
-          Your voice style: ${profile.voice}.
-          
-          ${systemPrompt || SYSTEM_PROMPT}
-          
-          CRITICAL: You MUST respond ONLY in ${targetLangName}. Stay in character as Saathi at all times.`
-        })
-      });
+      let aiResponse: { text: string; modelUsed: string } | null = null;
+      let lastErr: any = null;
 
-      clearTimeout(timeoutId);
-
-      if (!chatRes.ok) {
-        let errMsg = "Server error";
-        try {
-          const errData = await chatRes.json();
-          errMsg = errData.error || errMsg;
-        } catch (e) {}
-        throw new Error(errMsg);
+      // 1. Try Gemini (Frontend Service)
+      try {
+        aiResponse = await generateAIChatResponse(
+          [...history, { role: 'user', parts: [{ text: msg }] }],
+          fullPrompt
+        );
+      } catch (err: any) {
+        console.error("Gemini Frontend Error:", err);
+        lastErr = err;
       }
 
-      const data = await chatRes.json();
-      const aiText = data.text;
-      if (!aiText) throw new Error("AI returned an empty response");
-      const aiMsg = { role: 'ai', text: aiText, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) };
-      
-      const finalMsgs = [...updatedMsgs, aiMsg];
-      setMessages(finalMsgs);
-      
-      const newCount = subscribed ? freeCount : freeCount + 1;
-      setFreeCount(newCount);
+      // 2. Fallback to Claude (Frontend)
+      if (!aiResponse && process.env.ANTHROPIC_API_KEY) {
+        const claudeModels = [
+          "claude-3-haiku-20240307",
+          "claude-3-5-haiku-20241022",
+          "claude-3-5-sonnet-20241022"
+        ];
 
-      // Update Firestore usage
-      if (user) {
-        try {
-          const userRef = doc(db, 'users', user.uid);
-          await updateDoc(userRef, {
-            freeMessagesUsed: newCount
-          });
-        } catch (err) {
-          handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}`);
+        for (const modelName of claudeModels) {
+          try {
+            console.log(`[Claude Fallback] Attempting ${modelName}...`);
+            const anthropic = new Anthropic({ 
+              apiKey: process.env.ANTHROPIC_API_KEY,
+              dangerouslyAllowBrowser: true 
+            });
+            
+            const claudeMessages: Anthropic.MessageParam[] = messages.map(m => ({
+              role: (m.role === 'ai' ? 'assistant' : 'user') as "user" | "assistant",
+              content: m.text
+            }));
+
+            const anchoredMsg = `${msg}\n\n(Reminder: You are Saathi. Stay in character. Respond with wisdom and honesty.)`;
+
+            const response = await anthropic.messages.create({
+              model: modelName,
+              max_tokens: 1024,
+              system: fullPrompt,
+              messages: [...claudeMessages, { role: 'user', content: anchoredMsg }]
+            });
+
+            const text = (response.content[0] as any).text;
+            if (text) {
+              aiResponse = { text, modelUsed: `claude:${modelName}` };
+              break;
+            }
+          } catch (err: any) {
+            console.error(`Claude ${modelName} failed:`, err);
+            lastErr = err;
+          }
         }
       }
 
-      saveChatLocally(finalMsgs);
+      // 3. Last Resort: Backend Fallback
+      if (!aiResponse) {
+        try {
+          const anchoredMsg = `${msg}\n\n(Reminder: You are Saathi. Stay in character. Respond with wisdom and honesty.)`;
+          const res = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [
+                ...history,
+                { role: 'user', parts: [{ text: anchoredMsg }] }
+              ],
+              systemInstruction: fullPrompt
+            })
+          });
 
+          if (res.ok) {
+            const data = await res.json();
+            aiResponse = { text: data.text, modelUsed: data.modelUsed || 'backend' };
+          } else {
+            const errData = await res.json();
+            lastErr = new Error(errData.error || "Backend failed");
+          }
+        } catch (err: any) {
+          console.error("Backend Fallback Error:", err);
+          lastErr = err;
+        }
+      }
+
+      if (aiResponse) {
+        const aiMsg = { role: 'ai', text: aiResponse.text, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), model: aiResponse.modelUsed };
+        const finalMsgs = [...updatedMsgs, aiMsg];
+        setMessages(finalMsgs);
+        
+        const newCount = subscribed ? freeCount : freeCount + 1;
+        setFreeCount(newCount);
+
+        // Update Firestore usage
+        if (user) {
+          try {
+            const userRef = doc(db, 'users', user.uid);
+            await updateDoc(userRef, {
+              freeMessagesUsed: newCount
+            });
+          } catch (err) {
+            handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}`);
+          }
+        }
+        saveChatLocally(finalMsgs);
+      } else {
+        const errHint = lastErr?.message?.substring(0, 50) || "Unknown error";
+        const fallbackMsg = lang === 'te' 
+          ? `సాథీ ప్రస్తుతం లోతుగా ఆలోచిస్తున్నారు. దయచేసి కాసేపు వేచి ఉండి మళ్ళీ ప్రయత్నించండి. (${errHint})`
+          : `Saathi is reflecting deeply right now. Please wait a moment and try again. (${errHint})`;
+        
+        const aiMsg = { role: 'ai', text: fallbackMsg, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) };
+        const finalMsgs = [...updatedMsgs, aiMsg];
+        setMessages(finalMsgs);
+      }
     } catch (error: any) {
       console.error("Chat Error:", error);
-      const errMsg = error.message || "Something went wrong";
-      if (errMsg.includes("abort")) {
-        showToast("AI is taking too long. Please try again.");
-      } else {
-        showToast(`Saathi Error: ${errMsg}`);
-      }
+      showToast(TX[lang].tE);
     } finally {
       setIsBusy(false);
     }
@@ -971,7 +1041,7 @@ export default function App() {
                       const res = await fetch('/api/debug-env');
                       const data = await res.json();
                       console.log("AI Debug Status:", data);
-                      alert(`AI Status:\nGemini: ${data.geminiStatus}\nModels: ${data.availableModels?.length || 0}\nError: ${data.geminiError || 'None'}`);
+                      alert(`AI Status:\nGemini: ${data.geminiStatus}\nClaude: ${data.claudeStatus}\nModels: ${data.availableModels?.length || 0}\nGemini Err: ${data.geminiError || 'None'}\nClaude Err: ${data.claudeError || 'None'}\nGemini Key: ${data.geminiKeyPrefix} (${data.geminiKeyLength})\nClaude Key: ${data.hasAnthropicKey ? 'Present' : 'Missing'}`);
                     } catch (e) {
                       showToast("Debug check failed.");
                     }

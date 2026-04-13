@@ -113,60 +113,59 @@ app.get('/api/debug-env', async (req, res) => {
     firestoreError = e.message;
   }
 
-  const geminiKey = process.env.GEMINI_API_KEY || "";
+  const geminiKey = (process.env.GEMINI_API_KEY || "").trim();
   try {
     if (geminiKey) {
-      // Try to list models using raw fetch to bypass SDK limitations
-      try {
-        const listUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${geminiKey}`;
-        const listRes = await fetch(listUrl);
-        const listData = await listRes.json();
-        if (listData.models) {
-          availableModels = listData.models.map((m: any) => m.name.replace('models/', ''));
-          geminiStatus = `models_found_${availableModels.length}`;
-        } else if (listData.error) {
-          geminiStatus = `list_failed_${listData.error.status}`;
-          geminiError = listData.error.message;
-        }
-      } catch (e: any) {
-        console.log("List models failed:", e.message);
-      }
-
-      const genAI = getGenAI();
-      const modelsToTry = [
-        "gemini-1.5-flash", 
-        "gemini-1.5-flash-8b",
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-flash-8b-latest",
-        "gemini-2.0-flash",
-        "gemini-1.5-pro",
-        "gemini-pro"
-      ];
-      
-      // If we found models from the list, try those first
-      const finalModelsToTry = availableModels.length > 0 
-        ? [...new Set([...availableModels.filter(m => m.includes('flash') || m.includes('pro')), ...modelsToTry])]
-        : modelsToTry;
-
-      let lastErr = null;
-      for (const m of finalModelsToTry) {
+      if (geminiKey.length < 30) {
+        geminiStatus = "invalid_key_too_short";
+        geminiError = "The GEMINI_API_KEY is too short. It should be around 39 characters.";
+      } else {
+        // Try to list models using raw fetch to bypass SDK limitations
         try {
-          const testModel = genAI.getGenerativeModel({ model: m });
-          const result = await testModel.generateContent("hi");
-          const response = await result.response;
-          if (response.text()) {
-            geminiStatus = `working_with_${m}`;
-            geminiError = null;
-            break;
+          const listUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${geminiKey}`;
+          const listRes = await fetch(listUrl);
+          const listData = await listRes.json();
+          if (listData.models) {
+            availableModels = listData.models.map((m: any) => m.name.replace('models/', ''));
+            geminiStatus = `models_found_${availableModels.length}`;
+          } else if (listData.error) {
+            geminiStatus = `list_failed_${listData.error.status}`;
+            geminiError = listData.error.message;
           }
         } catch (e: any) {
-          lastErr = e.message;
-          geminiStatus = `failed_with_${m}`;
+          console.log("List models failed:", e.message);
         }
-      }
-      
-      if (geminiStatus.startsWith('failed')) {
-        geminiError = lastErr;
+
+        const genAI = getGenAI();
+        const modelsToTry = [
+          "gemini-3.1-pro-preview",
+          "gemini-3-flash-preview",
+          "gemini-1.5-flash-latest",
+          "gemini-1.5-flash"
+        ];
+        
+        let workingModels: string[] = [];
+        let lastErr = null;
+        for (const m of modelsToTry) {
+          try {
+            const testModel = genAI.getGenerativeModel({ model: m });
+            const result = await testModel.generateContent("hi");
+            const response = await result.response;
+            if (response.text()) {
+              workingModels.push(m);
+            }
+          } catch (e: any) {
+            lastErr = e.message;
+          }
+        }
+        
+        if (workingModels.length > 0) {
+          geminiStatus = `working_models:${workingModels.join(',')}`;
+          availableModels = workingModels;
+        } else {
+          geminiStatus = "all_failed";
+          geminiError = lastErr;
+        }
       }
     } else {
       geminiStatus = "missing_key";
@@ -174,6 +173,27 @@ app.get('/api/debug-env', async (req, res) => {
   } catch (e: any) {
     geminiStatus = "failed";
     geminiError = e.message;
+  }
+
+  let claudeStatus = "not_tested";
+  let claudeError = null;
+  const anthropicKey = process.env.ANTHROPIC_API_KEY || "";
+  
+  if (anthropicKey) {
+    try {
+      const anthropic = getAnthropic();
+      await anthropic.messages.create({
+        model: "claude-3-haiku-20240307",
+        max_tokens: 10,
+        messages: [{ role: "user", content: "hi" }]
+      });
+      claudeStatus = "working";
+    } catch (e: any) {
+      claudeStatus = "failed";
+      claudeError = e.message;
+    }
+  } else {
+    claudeStatus = "missing_key";
   }
 
   res.json({
@@ -185,91 +205,100 @@ app.get('/api/debug-env', async (req, res) => {
     geminiStatus,
     geminiError,
     availableModels,
+    claudeStatus,
+    claudeError,
     geminiKeyPrefix: geminiKey ? geminiKey.substring(0, 8) + "..." : "missing",
     geminiKeyLength: geminiKey.length,
     isVercel: !!process.env.VERCEL,
     hasGeminiKey: !!geminiKey,
-    hasAnthropicKey: !!process.env.ANTHROPIC_API_KEY,
+    hasAnthropicKey: !!anthropicKey,
   });
 });
 
 app.post('/api/chat', async (req, res) => {
   try {
     const { contents, systemInstruction } = req.body;
-    const geminiKey = process.env.GEMINI_API_KEY;
-    if (!geminiKey) {
-      return res.status(500).json({ error: "GEMINI_API_KEY not set on server" });
-    }
-
-    const genAI = getGenAI();
+    const geminiKey = (process.env.GEMINI_API_KEY || "").trim();
     
-    // Prioritize models that are most likely to be available and stable
-    const modelsToTry = [
-      "gemini-1.5-flash", 
-      "gemini-1.5-flash-8b",
-      "gemini-1.5-flash-latest",
-      "gemini-1.5-flash-8b-latest",
-      "gemini-2.0-flash",
-      "gemini-1.5-pro",
-      "gemini-pro"
-    ];
-    
-    console.log(`[Chat] Received request with ${contents?.length || 0} messages.`);
-    
-    let lastError = null;
+    let lastError: any = null;
     let successfulModel = "";
-
-    const safetySettings = [
-      { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-      { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-      { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-      { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-    ];
-
     const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
 
-    for (const modelName of modelsToTry) {
-      // Try each model up to 2 times before moving to the next one
-      for (let attempt = 1; attempt <= 2; attempt++) {
-        try {
-          console.log(`[Chat] Attempting model: ${modelName} (Attempt ${attempt}/2)`);
-          const aiModel = genAI.getGenerativeModel({ 
-            model: modelName,
-            systemInstruction: systemInstruction,
-            safetySettings
-          });
-          const result = await aiModel.generateContent({ contents });
-          const response = await result.response;
-          
-          // Check if response was blocked
-          if (response.promptFeedback?.blockReason) {
-            console.warn(`[Chat] Model ${modelName} blocked prompt:`, response.promptFeedback.blockReason);
-            break; // Don't retry if it was a safety block
-          }
+    if (!geminiKey || geminiKey.length < 30) {
+      console.error("[Chat] GEMINI_API_KEY is missing or too short.");
+      // We don't return yet, we might have Claude fallback
+      lastError = new Error("GEMINI_API_KEY is invalid or missing. Please check your Vercel Environment Variables.");
+    } else {
+      const genAI = getGenAI();
+      
+      // Prioritize models that are most likely to be available and stable
+      const modelsToTry = [
+        "gemini-3.1-pro-preview",
+        "gemini-3-flash-preview",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-flash"
+      ];
+      
+      console.log(`[Chat] Received request with ${contents?.length || 0} messages.`);
+      
+      const safetySettings = [
+        { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+        { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+        { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+      ];
 
-          let text = "";
+      for (const modelName of modelsToTry) {
+        // Try each model up to 2 times before moving to the next one
+        for (let attempt = 1; attempt <= 2; attempt++) {
           try {
-            text = response.text();
-          } catch (e: any) {
-            console.warn(`[Chat] Model ${modelName} text() failed (likely safety):`, e.message);
-            break; // Don't retry if it was a safety block
-          }
+            console.log(`[Chat] Attempting model: ${modelName} (Attempt ${attempt}/2)`);
+            const aiModel = genAI.getGenerativeModel({ 
+              model: modelName,
+              systemInstruction: systemInstruction,
+              safetySettings
+            });
+            const result = await aiModel.generateContent({ contents });
+            const response = await result.response;
+            
+            // Check if response was blocked
+            if (response.promptFeedback?.blockReason) {
+              console.warn(`[Chat] Model ${modelName} blocked prompt:`, response.promptFeedback.blockReason);
+              break; // Don't retry if it was a safety block
+            }
 
-          if (text) {
-            successfulModel = modelName;
-            console.log(`[Chat] Success with model: ${modelName}`);
-            return res.json({ text, modelUsed: modelName });
+            let text = "";
+            try {
+              text = response.text();
+            } catch (e: any) {
+              console.warn(`[Chat] Model ${modelName} text() failed (likely safety):`, e.message);
+              break; // Don't retry if it was a safety block
+            }
+
+            if (text) {
+              successfulModel = modelName;
+              console.log(`[Chat] Success with model: ${modelName}`);
+              return res.json({ text, modelUsed: modelName });
+            }
+          } catch (err: any) {
+            lastError = err;
+            console.warn(`[Chat] Model ${modelName} failed on attempt ${attempt}:`, err.message);
+            
+            // If it's an invalid API key, don't bother retrying Gemini at all
+            if (err.message?.includes("API key not valid") || err.message?.includes("400")) {
+              console.error("[Chat] Gemini API Key is invalid. Skipping Gemini.");
+              break; 
+            }
+            
+            // If it's a 404, don't bother retrying this specific model
+            if (err.message?.includes("404") || err.message?.includes("not found")) break;
+            
+            // Wait a bit before retrying
+            if (attempt < 2) await delay(1000);
           }
-        } catch (err: any) {
-          lastError = err;
-          console.warn(`[Chat] Model ${modelName} failed on attempt ${attempt}:`, err.message);
-          
-          // If it's a 404, don't bother retrying this specific model
-          if (err.message?.includes("404") || err.message?.includes("not found")) break;
-          
-          // Wait a bit before retrying
-          if (attempt < 2) await delay(1000);
         }
+        // If we hit an invalid API key error, break the outer loop too
+        if (lastError?.message?.includes("API key not valid")) break;
       }
     }
     
@@ -277,9 +306,10 @@ app.post('/api/chat', async (req, res) => {
     if (process.env.ANTHROPIC_API_KEY) {
       console.log("[Chat] Anthropic API Key found, preparing fallback...");
       const claudeModels = [
-        "claude-3-5-sonnet-20241022",
+        "claude-3-haiku-20240307",
         "claude-3-5-haiku-20241022",
-        "claude-3-haiku-20240307"
+        "claude-3-5-sonnet-20241022",
+        "claude-3-sonnet-20240229"
       ];
 
       for (const claudeModel of claudeModels) {
