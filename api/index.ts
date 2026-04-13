@@ -206,8 +206,6 @@ app.post('/api/chat', async (req, res) => {
       "gemini-1.5-flash-latest",
       "gemini-2.0-flash",
       "gemini-1.5-pro",
-      "gemini-1.5-pro-latest",
-      "gemini-2.0-flash-exp",
       "gemini-pro"
     ];
     
@@ -221,39 +219,50 @@ app.post('/api/chat', async (req, res) => {
       { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
     ];
 
+    const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
+
     for (const modelName of modelsToTry) {
-      try {
-        console.log(`[Chat] Attempting model: ${modelName}`);
-        const aiModel = genAI.getGenerativeModel({ 
-          model: modelName,
-          systemInstruction: systemInstruction,
-          safetySettings
-        });
-        const result = await aiModel.generateContent({ contents });
-        const response = await result.response;
-        
-        // Check if response was blocked
-        if (response.promptFeedback?.blockReason) {
-          console.warn(`[Chat] Model ${modelName} blocked prompt:`, response.promptFeedback.blockReason);
-          continue;
-        }
-
-        let text = "";
+      // Try each model up to 2 times before moving to the next one
+      for (let attempt = 1; attempt <= 2; attempt++) {
         try {
-          text = response.text();
-        } catch (e: any) {
-          console.warn(`[Chat] Model ${modelName} text() failed (likely safety):`, e.message);
-          continue;
-        }
+          console.log(`[Chat] Attempting model: ${modelName} (Attempt ${attempt}/2)`);
+          const aiModel = genAI.getGenerativeModel({ 
+            model: modelName,
+            systemInstruction: systemInstruction,
+            safetySettings
+          });
+          const result = await aiModel.generateContent({ contents });
+          const response = await result.response;
+          
+          // Check if response was blocked
+          if (response.promptFeedback?.blockReason) {
+            console.warn(`[Chat] Model ${modelName} blocked prompt:`, response.promptFeedback.blockReason);
+            break; // Don't retry if it was a safety block
+          }
 
-        if (text) {
-          successfulModel = modelName;
-          console.log(`[Chat] Success with model: ${modelName}`);
-          return res.json({ text, modelUsed: modelName });
+          let text = "";
+          try {
+            text = response.text();
+          } catch (e: any) {
+            console.warn(`[Chat] Model ${modelName} text() failed (likely safety):`, e.message);
+            break; // Don't retry if it was a safety block
+          }
+
+          if (text) {
+            successfulModel = modelName;
+            console.log(`[Chat] Success with model: ${modelName}`);
+            return res.json({ text, modelUsed: modelName });
+          }
+        } catch (err: any) {
+          lastError = err;
+          console.warn(`[Chat] Model ${modelName} failed on attempt ${attempt}:`, err.message);
+          
+          // If it's a 404, don't bother retrying this specific model
+          if (err.message?.includes("404") || err.message?.includes("not found")) break;
+          
+          // Wait a bit before retrying
+          if (attempt < 2) await delay(1000);
         }
-      } catch (err: any) {
-        lastError = err;
-        console.warn(`[Chat] Model ${modelName} failed:`, err.message);
       }
     }
     
@@ -261,48 +270,59 @@ app.post('/api/chat', async (req, res) => {
     if (process.env.ANTHROPIC_API_KEY) {
       const claudeModels = [
         "claude-3-5-sonnet-20241022",
-        "claude-3-7-sonnet-20250219",
         "claude-3-5-haiku-20241022",
-        "claude-3-haiku-20240307",
-        "claude-3-opus-20240229"
+        "claude-3-haiku-20240307"
       ];
 
       for (const claudeModel of claudeModels) {
-        try {
-          console.log(`[Chat] Gemini failed. Attempting Claude fallback with ${claudeModel}...`);
-          const anthropic = getAnthropic();
-          
-          // Convert Gemini contents to Anthropic messages
-          const messages = contents.map((c: any) => ({
-            role: c.role === 'model' ? 'assistant' : 'user',
-            content: c.parts[0].text
-          }));
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          try {
+            console.log(`[Chat] Gemini failed. Attempting Claude fallback with ${claudeModel} (Attempt ${attempt}/2)...`);
+            const anthropic = getAnthropic();
+            
+            // Convert Gemini contents to Anthropic messages
+            const messages = contents.map((c: any) => ({
+              role: c.role === 'model' ? 'assistant' : 'user',
+              content: c.parts[0].text
+            }));
 
-          const response = await anthropic.messages.create({
-            model: claudeModel,
-            max_tokens: 4096,
-            system: systemInstruction,
-            messages: messages,
-          });
+            const response = await anthropic.messages.create({
+              model: claudeModel,
+              max_tokens: 4096,
+              system: systemInstruction,
+              messages: messages,
+            });
 
-          const text = response.content[0].type === 'text' ? response.content[0].text : "";
-          if (text) {
-            console.log(`[Chat] Success with Claude fallback (${claudeModel})!`);
-            return res.json({ text, modelUsed: claudeModel });
+            const text = response.content[0].type === 'text' ? response.content[0].text : "";
+            if (text) {
+              console.log(`[Chat] Success with Claude fallback (${claudeModel})!`);
+              return res.json({ text, modelUsed: claudeModel });
+            }
+          } catch (err: any) {
+            console.warn(`[Chat] Claude model ${claudeModel} failed on attempt ${attempt}:`, err.message);
+            lastError = err;
+            
+            // If it's a 401 (Unauthorized), the key is likely bad, stop trying Claude
+            if (err.status === 401) break;
+            
+            // If it's a 404, move to next model
+            if (err.status === 404) break;
+
+            // Wait a bit before retrying
+            if (attempt < 2) await delay(1000);
           }
-        } catch (err: any) {
-          console.warn(`[Chat] Claude model ${claudeModel} failed:`, err.message);
-          lastError = err;
-          // If it's a 401 (Unauthorized), the key is likely bad, stop trying Claude
-          if (err.status === 401) break;
         }
       }
     }
     
     console.error("[Chat] All models failed. Last error:", lastError?.message);
-    throw lastError || new Error("All Gemini models failed. Please check your API key permissions and quota.");
+    
+    // Instead of a raw error, return a graceful "Saathi is reflecting" message
+    const fallbackResponse = "Saathi is reflecting deeply right now. Please wait a moment and try again. (సాథీ ప్రస్తుతం లోతుగా ఆలోచిస్తున్నారు. దయచేసి కాసేపు వేచి మళ్ళీ ప్రయత్నించండి.)";
+    res.json({ text: fallbackResponse, modelUsed: "fallback-static" });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    console.error("[Chat] Global Error:", error.message);
+    res.status(500).json({ error: "Saathi is currently unavailable. Please check your connection." });
   }
 });
 
