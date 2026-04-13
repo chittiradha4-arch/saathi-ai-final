@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
 import Anthropic from '@anthropic-ai/sdk';
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
@@ -200,30 +200,52 @@ app.post('/api/chat', async (req, res) => {
 
     const genAI = getGenAI();
     
-    // Prioritize models found in the user's specific debug scan
+    // Prioritize models that are most likely to be available and stable
     const modelsToTry = [
       "gemini-1.5-flash", 
       "gemini-1.5-flash-latest",
       "gemini-2.0-flash",
-      "gemini-2.5-flash",
-      "gemini-2.5-pro",
       "gemini-1.5-pro",
+      "gemini-1.5-pro-latest",
+      "gemini-2.0-flash-exp",
       "gemini-pro"
     ];
     
     let lastError = null;
     let successfulModel = "";
 
+    const safetySettings = [
+      { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+      { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+      { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+      { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+    ];
+
     for (const modelName of modelsToTry) {
       try {
         console.log(`[Chat] Attempting model: ${modelName}`);
         const aiModel = genAI.getGenerativeModel({ 
           model: modelName,
-          systemInstruction: systemInstruction
+          systemInstruction: systemInstruction,
+          safetySettings
         });
         const result = await aiModel.generateContent({ contents });
         const response = await result.response;
-        const text = response.text();
+        
+        // Check if response was blocked
+        if (response.promptFeedback?.blockReason) {
+          console.warn(`[Chat] Model ${modelName} blocked prompt:`, response.promptFeedback.blockReason);
+          continue;
+        }
+
+        let text = "";
+        try {
+          text = response.text();
+        } catch (e: any) {
+          console.warn(`[Chat] Model ${modelName} text() failed (likely safety):`, e.message);
+          continue;
+        }
+
         if (text) {
           successfulModel = modelName;
           console.log(`[Chat] Success with model: ${modelName}`);
@@ -232,19 +254,17 @@ app.post('/api/chat', async (req, res) => {
       } catch (err: any) {
         lastError = err;
         console.warn(`[Chat] Model ${modelName} failed:`, err.message);
-        // If it's a 404, we definitely want to try the next one
-        // If it's a 429 (Rate Limit), we might also want to try another one
       }
     }
     
     // FINAL BULLETPROOF FALLBACK: Anthropic (Claude)
     if (process.env.ANTHROPIC_API_KEY) {
       const claudeModels = [
-        "claude-3-5-sonnet-latest",
         "claude-3-5-sonnet-20241022",
-        "claude-3-7-sonnet-latest",
-        "claude-3-opus-latest",
-        "claude-3-haiku-latest"
+        "claude-3-7-sonnet-20250219",
+        "claude-3-5-haiku-20241022",
+        "claude-3-haiku-20240307",
+        "claude-3-opus-20240229"
       ];
 
       for (const claudeModel of claudeModels) {
@@ -260,7 +280,7 @@ app.post('/api/chat', async (req, res) => {
 
           const response = await anthropic.messages.create({
             model: claudeModel,
-            max_tokens: 1024,
+            max_tokens: 4096,
             system: systemInstruction,
             messages: messages,
           });
@@ -273,6 +293,8 @@ app.post('/api/chat', async (req, res) => {
         } catch (err: any) {
           console.warn(`[Chat] Claude model ${claudeModel} failed:`, err.message);
           lastError = err;
+          // If it's a 401 (Unauthorized), the key is likely bad, stop trying Claude
+          if (err.status === 401) break;
         }
       }
     }
