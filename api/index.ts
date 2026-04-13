@@ -134,8 +134,11 @@ app.get('/api/debug-env', async (req, res) => {
 
       const genAI = getGenAI();
       const modelsToTry = [
-        "gemini-2.0-flash", 
         "gemini-1.5-flash", 
+        "gemini-1.5-flash-8b",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-flash-8b-latest",
+        "gemini-2.0-flash",
         "gemini-1.5-pro",
         "gemini-pro"
       ];
@@ -203,11 +206,15 @@ app.post('/api/chat', async (req, res) => {
     // Prioritize models that are most likely to be available and stable
     const modelsToTry = [
       "gemini-1.5-flash", 
+      "gemini-1.5-flash-8b",
       "gemini-1.5-flash-latest",
+      "gemini-1.5-flash-8b-latest",
       "gemini-2.0-flash",
       "gemini-1.5-pro",
       "gemini-pro"
     ];
+    
+    console.log(`[Chat] Received request with ${contents?.length || 0} messages.`);
     
     let lastError = null;
     let successfulModel = "";
@@ -268,6 +275,7 @@ app.post('/api/chat', async (req, res) => {
     
     // FINAL BULLETPROOF FALLBACK: Anthropic (Claude)
     if (process.env.ANTHROPIC_API_KEY) {
+      console.log("[Chat] Anthropic API Key found, preparing fallback...");
       const claudeModels = [
         "claude-3-5-sonnet-20241022",
         "claude-3-5-haiku-20241022",
@@ -313,12 +321,16 @@ app.post('/api/chat', async (req, res) => {
           }
         }
       }
+    } else {
+      console.warn("[Chat] ANTHROPIC_API_KEY not found. No secondary fallback available.");
     }
     
     console.error("[Chat] All models failed. Last error:", lastError?.message);
     
     // Instead of a raw error, return a graceful "Saathi is reflecting" message
-    const fallbackResponse = "Saathi is reflecting deeply right now. Please wait a moment and try again. (సాథీ ప్రస్తుతం లోతుగా ఆలోచిస్తున్నారు. దయచేసి కాసేపు వేచి మళ్ళీ ప్రయత్నించండి.)";
+    // but include the error in a small way for debugging
+    const errorHint = lastError?.message ? ` (Error: ${lastError.message.substring(0, 50)}...)` : "";
+    const fallbackResponse = `Saathi is reflecting deeply right now. Please wait a moment and try again.${errorHint} (సాథీ ప్రస్తుతం లోతుగా ఆలోచిస్తున్నారు. దయచేసి కాసేపు వేచి మళ్ళీ ప్రయత్నించండి.)`;
     res.json({ text: fallbackResponse, modelUsed: "fallback-static" });
   } catch (error: any) {
     console.error("[Chat] Global Error:", error.message);

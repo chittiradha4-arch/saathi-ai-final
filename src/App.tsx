@@ -961,6 +961,25 @@ export default function App() {
                 <div className="h-st">{t.cO}</div>
               </div>
               <div style={{ flex: 1 }}></div>
+              {user?.email === 'chitti.radha4@gmail.com' && (
+                <button 
+                  className="h-enc" 
+                  style={{ background: 'rgba(255,255,255,0.1)', border: '1px solid var(--lp-gold)', borderRadius: '4px', padding: '2px 8px', cursor: 'pointer', color: 'var(--lp-gold)', fontSize: '0.7rem' }}
+                  onClick={async () => {
+                    showToast("Checking AI Status...");
+                    try {
+                      const res = await fetch('/api/debug-env');
+                      const data = await res.json();
+                      console.log("AI Debug Status:", data);
+                      alert(`AI Status:\nGemini: ${data.geminiStatus}\nModels: ${data.availableModels?.length || 0}\nError: ${data.geminiError || 'None'}`);
+                    } catch (e) {
+                      showToast("Debug check failed.");
+                    }
+                  }}
+                >
+                  Debug AI
+                </button>
+              )}
               <button className="h-enc" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#e53e3e' }} onClick={handleSignOut}>Logout</button>
               <button className="h-enc" style={{ background: 'none', border: 'none', cursor: 'pointer' }} onClick={() => setShowClearConfirm(true)}>🗑️ Clear</button>
               <div className="h-enc">🔒 Local</div>
