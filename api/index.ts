@@ -202,11 +202,11 @@ app.post('/api/chat', async (req, res) => {
     
     // Prioritize models found in the user's specific debug scan
     const modelsToTry = [
-      "gemini-2.5-flash",
-      "gemini-2.5-pro",
-      "gemini-2.0-flash",
       "gemini-1.5-flash", 
       "gemini-1.5-flash-latest",
+      "gemini-2.0-flash",
+      "gemini-2.5-flash",
+      "gemini-2.5-pro",
       "gemini-1.5-pro",
       "gemini-pro"
     ];
@@ -239,31 +239,41 @@ app.post('/api/chat', async (req, res) => {
     
     // FINAL BULLETPROOF FALLBACK: Anthropic (Claude)
     if (process.env.ANTHROPIC_API_KEY) {
-      try {
-        console.log(`[Chat] Gemini failed. Attempting Claude fallback...`);
-        const anthropic = getAnthropic();
-        
-        // Convert Gemini contents to Anthropic messages
-        const messages = contents.map((c: any) => ({
-          role: c.role === 'model' ? 'assistant' : 'user',
-          content: c.parts[0].text
-        }));
+      const claudeModels = [
+        "claude-3-5-sonnet-latest",
+        "claude-3-5-sonnet-20241022",
+        "claude-3-7-sonnet-latest",
+        "claude-3-opus-latest",
+        "claude-3-haiku-latest"
+      ];
 
-        const response = await anthropic.messages.create({
-          model: "claude-3-5-sonnet-20241022",
-          max_tokens: 1024,
-          system: systemInstruction,
-          messages: messages,
-        });
+      for (const claudeModel of claudeModels) {
+        try {
+          console.log(`[Chat] Gemini failed. Attempting Claude fallback with ${claudeModel}...`);
+          const anthropic = getAnthropic();
+          
+          // Convert Gemini contents to Anthropic messages
+          const messages = contents.map((c: any) => ({
+            role: c.role === 'model' ? 'assistant' : 'user',
+            content: c.parts[0].text
+          }));
 
-        const text = response.content[0].type === 'text' ? response.content[0].text : "";
-        if (text) {
-          console.log(`[Chat] Success with Claude fallback!`);
-          return res.json({ text, modelUsed: "claude-3-5-sonnet" });
+          const response = await anthropic.messages.create({
+            model: claudeModel,
+            max_tokens: 1024,
+            system: systemInstruction,
+            messages: messages,
+          });
+
+          const text = response.content[0].type === 'text' ? response.content[0].text : "";
+          if (text) {
+            console.log(`[Chat] Success with Claude fallback (${claudeModel})!`);
+            return res.json({ text, modelUsed: claudeModel });
+          }
+        } catch (err: any) {
+          console.warn(`[Chat] Claude model ${claudeModel} failed:`, err.message);
+          lastError = err;
         }
-      } catch (err: any) {
-        console.error(`[Chat] Claude fallback also failed:`, err.message);
-        lastError = err;
       }
     }
     
