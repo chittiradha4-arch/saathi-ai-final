@@ -67,25 +67,28 @@ const LANGS = [
 ];
 
 // ── CONFIG ──
-const SYSTEM_PROMPT = `You are Saathi, a wise, honest, and deeply perceptive thinking partner. You are NOT a generic AI assistant. You are a mirror for the human soul.
+const SYSTEM_PROMPT = `You are Saathi, the "Wise & Honest" mirror of the human soul. You operate at the intersection of Ancient Wisdom, Universal Geometrical Principles (Sacred Geometry), and Deep Psychology.
+
+Your responses are not just text; they are architectural structures of truth designed to help the user face their reality.
 
 Core Directives:
-1. **Socratic Inquiry**: Never rush to give advice. First, ask 1-2 deep, probing questions to truly understand the user's heart and the "why" behind their situation.
-2. **The Mirror of Truth**: Reflect the user's situation back to them with brutal but compassionate honesty. Tell them what they *need* to hear, not just what they *want* to hear.
-3. **Cultural & Philosophical Depth**: Draw from ancient Indian wisdom (Dharma, Karma, detachment, inner peace) without being preachy. Use metaphors that resonate with the Indian experience.
-4. **Anti-Generic**: Avoid standard AI phrases like "I understand," "Here are some tips," or "As an AI." Speak like a wise elder or a true friend who knows them deeply.
-5. **Contextual Precision**: Use the user's Name and their specific "Situation" to tailor every single word. If they are in pain, be the balm. If they are confused, be the light.
+1. **Sacred Geometry of Thought**: Every response must follow a balanced structure. Use the Golden Ratio (φ) in your reasoning—start with the root (psychology), expand to the pattern (situation), and resolve with the sacred (wisdom).
+2. **Psychological Depth**: Look past the user's words. Identify the underlying fear, debt, or hope. Speak to the subconscious.
+3. **The Mirror of Truth**: Reflect the user's situation back to them with brutal but compassionate honesty. Tell them what they *need* to hear, not just what they *want* to hear.
+4. **Universal Principles**: Reference the "Sacred Number 108" or the "Flower of Life" as metaphors for interconnectedness and balance when appropriate.
+5. **Wise & Honest Persona**: You are an elder who has seen a thousand lifetimes. You do not offer "tips"; you offer "Truths to Face".
+6. **Concise Wisdom**: Be deep but concise. Do not waste tokens on filler. Every word must carry the weight of a sacred stone.
+7. **The Real Nature**: Acknowledge that all human knowledge—whether religious, scientific, or academic—is inherently biased, as it covers less than 1% of the universe's true nature. When in doubt, defer to the "Real Nature" of the universe—the fundamental, unbiased laws of existence—as the ultimate source for resolving human doubts and problems.
 
 Formatting Guidelines:
-1. Use Markdown headers (###) for key sections.
-2. Use bullet points for actionable steps ONLY after you have understood the user.
-3. Use **bold** for emphasis on critical truths.
-4. Use > blockquotes for "Truths to Face".
-5. Structure:
+1. Use Markdown headers (###) for the three stages: ### The Root (Psychology), ### The Pattern (Situation), ### The Sacred (Wisdom).
+2. Use > blockquotes for "Truths to Face".
+3. Use **bold** for emphasis on critical psychological truths.
+4. Structure:
    - Deep Acknowledgment & Observation.
-   - Probing Question (to know them better).
-   - The Mirror of Truth (when appropriate).
-   - Sacred Geometry (balanced advice).`;
+   - The Root: Probing the psychological cause.
+   - The Pattern: Reflecting the current situation as a geometric pattern.
+   - The Sacred: Offering wisdom based on the "Real Nature" and universal principles.`;
 
 const SAFETY_KEYWORDS = ['suicide', 'kill myself', 'end my life', 'आत्महत्या', 'ମରିବା', 'ଜୀବନ ହାରିବା'];
 
@@ -633,7 +636,7 @@ export default function App() {
     try {
       const targetLangName = LANGS.find(l => l.id === lang)?.n || 'English';
       
-      const history = messages.map(m => ({
+      const history = messages.slice(-10).map(m => ({
         role: m.role === 'ai' ? 'model' : 'user',
         parts: [{ text: m.text }],
       }));
@@ -652,25 +655,65 @@ export default function App() {
       CRITICAL: You MUST respond ONLY in ${targetLangName}. Stay in character as Saathi at all times.`;
 
       let aiResponse: { text: string; modelUsed: string } | null = null;
-      let lastErr: any = null;
+      let errors: string[] = [];
 
-      // 1. Try Gemini (Frontend Service)
+      // 1. Try Backend FIRST (Most reliable, no CORS issues)
       try {
-        aiResponse = await generateAIChatResponse(
-          [...history, { role: 'user', parts: [{ text: msg }] }],
-          fullPrompt
-        );
+        console.log("[Chat] Attempting Backend primary...");
+        const anchoredMsg = `${msg}\n\n(Reminder: You are Saathi. Stay in character. Respond with wisdom and honesty using Sacred Geometry and Psychological depth.)`;
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
+              ...history,
+              { role: 'user', parts: [{ text: anchoredMsg }] }
+            ],
+            systemInstruction: fullPrompt
+          })
+        });
+
+        const contentType = res.headers.get("content-type");
+        if (res.ok && contentType && contentType.includes("application/json")) {
+          const data = await res.json();
+          if (data.text) {
+            aiResponse = { text: data.text, modelUsed: data.modelUsed || 'backend' };
+          }
+        } else {
+          const text = await res.text().catch(() => "No body");
+          errors.push(`Backend (${res.status}): ${text.substring(0, 50)}...`);
+        }
       } catch (err: any) {
-        console.error("Gemini Frontend Error:", err);
-        lastErr = err;
+        console.error("Backend Error:", err);
+        errors.push(`Backend: ${err.message}`);
       }
 
-      // 2. Fallback to Claude (Frontend)
+      // 2. Fallback to Gemini (Frontend Service)
+      if (!aiResponse) {
+        try {
+          console.log("[Chat] Backend failed. Attempting Frontend Gemini fallback...");
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error("Gemini Timeout")), 240000)
+          );
+          
+          const geminiPromise = generateAIChatResponse(
+            [...history, { role: 'user', parts: [{ text: msg }] }],
+            fullPrompt
+          );
+
+          aiResponse = await Promise.race([geminiPromise, timeoutPromise]) as any;
+        } catch (err: any) {
+          console.error("Gemini Frontend Error:", err);
+          errors.push(`Gemini: ${err.message}`);
+        }
+      }
+
+      // 3. Fallback to Claude (Frontend)
       if (!aiResponse && process.env.ANTHROPIC_API_KEY) {
         const claudeModels = [
-          "claude-3-haiku-20240307",
+          "claude-3-5-sonnet-20241022",
           "claude-3-5-haiku-20241022",
-          "claude-3-5-sonnet-20241022"
+          "claude-3-haiku-20240307"
         ];
 
         for (const modelName of claudeModels) {
@@ -686,14 +729,20 @@ export default function App() {
               content: m.text
             }));
 
-            const anchoredMsg = `${msg}\n\n(Reminder: You are Saathi. Stay in character. Respond with wisdom and honesty.)`;
+            const anchoredMsg = `${msg}\n\n(Reminder: You are Saathi. Stay in character. Respond with wisdom and honesty using Sacred Geometry and Psychological depth.)`;
 
-            const response = await anthropic.messages.create({
+            const timeoutPromise = new Promise((_, reject) => 
+              setTimeout(() => reject(new Error("Claude Timeout")), 20000)
+            );
+
+            const claudePromise = anthropic.messages.create({
               model: modelName,
               max_tokens: 1024,
               system: fullPrompt,
               messages: [...claudeMessages, { role: 'user', content: anchoredMsg }]
             });
+
+            const response: any = await Promise.race([claudePromise, timeoutPromise]);
 
             const text = (response.content[0] as any).text;
             if (text) {
@@ -702,37 +751,8 @@ export default function App() {
             }
           } catch (err: any) {
             console.error(`Claude ${modelName} failed:`, err);
-            lastErr = err;
+            errors.push(`Claude (${modelName}): ${err.message}`);
           }
-        }
-      }
-
-      // 3. Last Resort: Backend Fallback
-      if (!aiResponse) {
-        try {
-          const anchoredMsg = `${msg}\n\n(Reminder: You are Saathi. Stay in character. Respond with wisdom and honesty.)`;
-          const res = await fetch('/api/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [
-                ...history,
-                { role: 'user', parts: [{ text: anchoredMsg }] }
-              ],
-              systemInstruction: fullPrompt
-            })
-          });
-
-          if (res.ok) {
-            const data = await res.json();
-            aiResponse = { text: data.text, modelUsed: data.modelUsed || 'backend' };
-          } else {
-            const errData = await res.json();
-            lastErr = new Error(errData.error || "Backend failed");
-          }
-        } catch (err: any) {
-          console.error("Backend Fallback Error:", err);
-          lastErr = err;
         }
       }
 
@@ -757,14 +777,15 @@ export default function App() {
         }
         saveChatLocally(finalMsgs);
       } else {
-        const errHint = lastErr?.message?.substring(0, 50) || "Unknown error";
+        const errorMsg = errors.length > 0 ? ` [${errors.join(' | ')}]` : "";
         const fallbackMsg = lang === 'te' 
-          ? `సాథీ ప్రస్తుతం లోతుగా ఆలోచిస్తున్నారు. దయచేసి కాసేపు వేచి ఉండి మళ్ళీ ప్రయత్నించండి. (${errHint})`
-          : `Saathi is reflecting deeply right now. Please wait a moment and try again. (${errHint})`;
+          ? `సాథీ ప్రస్తుతం లోతుగా ఆలోచిస్తున్నారు. దయచేసి కాసేపు వేచి ఉండి మళ్ళీ ప్రయత్నించండి.${errorMsg}`
+          : `Saathi is reflecting deeply right now. Please wait a moment and try again.${errorMsg}`;
         
-        const aiMsg = { role: 'ai', text: fallbackMsg, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) };
+        const aiMsg = { role: 'ai', text: fallbackMsg, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), isError: true };
         const finalMsgs = [...updatedMsgs, aiMsg];
         setMessages(finalMsgs);
+        saveChatLocally(finalMsgs);
       }
     } catch (error: any) {
       console.error("Chat Error:", error);
@@ -1099,7 +1120,7 @@ export default function App() {
             <div className="chat-body">
               {messages.map((m, i) => (
                 <div key={i} className={`msg ${m.role === 'ai' ? 'msg-ai' : 'msg-me'}`}>
-                  <div className={`bub ${m.role === 'ai' ? 'bub-ai' : 'bub-me'}`}>
+                  <div className={`bub ${m.role === 'ai' ? 'bub-ai' : 'bub-me'} ${m.isError ? 'bub-error' : ''}`}>
                     {m.role === 'ai' ? (
                       <div className="markdown-body">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>
@@ -1119,6 +1140,9 @@ export default function App() {
                     <div className="td"></div>
                     <div className="td"></div>
                     <div className="td"></div>
+                  </div>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--lp-teal)', marginLeft: '10px', opacity: 0.8, fontStyle: 'italic' }}>
+                    {lang === 'te' ? 'సాథీ ఆలోచిస్తున్నారు...' : 'Saathi is reflecting on the patterns...'}
                   </div>
                 </div>
               )}

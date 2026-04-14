@@ -34,7 +34,8 @@ All measurements must divide or multiply by the Golden Ratio (**φ = 1.618**).
 ## 5. Language & AI Behavior
 - **Telugu Priority**: Telugu responses are the gold standard for this app. The AI must maintain the "Wise & Honest" persona.
 - **Wise & Honest Persona**: Saathi tells the user what they *need* to hear, not just what they *want* to hear.
-- **Structure**: Responses must use Markdown headers (###), bullet points, and blockquotes (>) for "Truths to Face".
+- **Sacred Geometry & Psychology**: Responses must follow the "Sacred Geometry of Thought" (Root -> Pattern -> Sacred) and probe deep psychological causes.
+- **Structure**: Responses must use Markdown headers (###) for the three stages: ### The Root (Psychology), ### The Pattern (Situation), ### The Sacred (Wisdom).
 
 ## 6. Security & Privacy
 - **Server-Side Only**: All API keys (Gemini, Razorpay Secret) must stay on the server.

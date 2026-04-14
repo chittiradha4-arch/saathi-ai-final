@@ -3,6 +3,7 @@ import cors from 'cors';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import Anthropic from '@anthropic-ai/sdk';
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
@@ -92,30 +93,122 @@ async function startServer() {
   });
 
   // 1. Gemini Proxy
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
+  let genAIInstance: GoogleGenerativeAI | null = null;
+  const getGenAI = () => {
+    const key = (process.env.GEMINI_API_KEY || "").trim();
+    if (!genAIInstance) {
+      genAIInstance = new GoogleGenerativeAI(key);
+    }
+    return genAIInstance;
+  };
+  
+  let anthropicInstance: Anthropic | null = null;
+  const getAnthropic = () => {
+    const key = (process.env.ANTHROPIC_API_KEY || "").trim();
+    if (!anthropicInstance) {
+      anthropicInstance = new Anthropic({ apiKey: key });
+    }
+    return anthropicInstance;
+  };
   
   app.post('/api/chat', async (req, res) => {
     try {
-      const { contents, systemInstruction, model } = req.body;
-      if (!process.env.GEMINI_API_KEY) {
-        console.error("GEMINI_API_KEY is missing in environment variables");
-        return res.status(500).json({ error: "GEMINI_API_KEY not set on server" });
+      const { contents, systemInstruction } = req.body;
+      const geminiKey = (process.env.GEMINI_API_KEY || "").trim();
+      
+      let lastError: any = null;
+      const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
+
+      if (geminiKey && geminiKey.length >= 30) {
+        const genAI = getGenAI();
+        const modelsToTry = [
+          "gemini-flash-latest",
+          "gemini-3.1-pro-preview"
+        ];
+        
+        for (const modelName of modelsToTry) {
+          try {
+            console.log(`[Server Chat] Attempting Gemini: ${modelName}`);
+            const aiModel = genAI.getGenerativeModel({ 
+              model: modelName,
+              systemInstruction: systemInstruction
+            });
+            
+            const generationConfig = {
+              maxOutputTokens: 1024,
+              temperature: 0.4,
+              topP: 0.8,
+              topK: 40,
+            };
+
+            // Add a 90s timeout per model attempt in backend
+            const modelTimeout = new Promise((_, reject) => 
+              setTimeout(() => reject(new Error(`Timeout for ${modelName}`)), 90000)
+            );
+
+            const resultPromise = aiModel.generateContent({ 
+              contents,
+              generationConfig
+            });
+
+            const result: any = await Promise.race([resultPromise, modelTimeout]);
+            const response = await result.response;
+            const text = response.text();
+            
+            if (text) {
+              console.log(`[Server Chat] Success with Gemini: ${modelName}`);
+              return res.json({ text, modelUsed: modelName });
+            }
+          } catch (err: any) {
+            lastError = err;
+            console.warn(`[Server Chat] Gemini ${modelName} failed:`, err.message);
+            if (err.message?.includes("API key not valid") || err.message?.includes("400")) break;
+            if (err.message?.includes("404")) continue;
+          }
+        }
       }
 
-      const aiModel = genAI.getGenerativeModel({ 
-        model: model || "gemini-1.5-flash",
-        systemInstruction: systemInstruction
-      });
+      // Fallback to Claude
+      if (process.env.ANTHROPIC_API_KEY) {
+        const claudeModels = [
+          "claude-3-5-sonnet-20241022",
+          "claude-3-5-haiku-20241022",
+          "claude-3-haiku-20240307"
+        ];
 
-      console.log("Sending request to Gemini...");
-      const result = await aiModel.generateContent({ contents });
-      const response = await result.response;
-      const text = response.text();
-      console.log("Gemini response received successfully");
-      res.json({ text });
+        for (const modelName of claudeModels) {
+          try {
+            console.log(`[Server Chat] Attempting Claude fallback: ${modelName}`);
+            const anthropic = getAnthropic();
+            const messages = contents.map((c: any) => ({
+              role: c.role === 'model' ? 'assistant' : 'user',
+              content: c.parts[0].text
+            }));
+
+            const response = await anthropic.messages.create({
+              model: modelName,
+              max_tokens: 4096,
+              system: systemInstruction,
+              messages: messages,
+            });
+
+            const text = response.content[0].type === 'text' ? response.content[0].text : "";
+            if (text) {
+              console.log(`[Server Chat] Success with Claude: ${modelName}`);
+              return res.json({ text, modelUsed: `claude:${modelName}` });
+            }
+          } catch (err: any) {
+            console.warn(`[Server Chat] Claude ${modelName} failed:`, err.message);
+            lastError = err;
+          }
+        }
+      }
+
+      const errorHint = lastError?.message ? ` (Error: ${lastError.message.substring(0, 100)}...)` : "";
+      res.status(503).setHeader('Content-Type', 'application/json').send(JSON.stringify({ error: `All AI models failed.${errorHint}` }));
     } catch (error: any) {
-      console.error("Gemini Error:", error);
-      res.status(500).json({ error: error.message || "Failed to get AI response" });
+      console.error("Global Server Chat Error:", error);
+      res.status(500).setHeader('Content-Type', 'application/json').send(JSON.stringify({ error: error.message || "Failed to get AI response" }));
     }
   });
 

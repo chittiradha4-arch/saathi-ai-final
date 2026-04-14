@@ -69,8 +69,8 @@ app.use(express.json({
 // Lazy Gemini initialization
 let genAIInstance: any = null;
 function getGenAI() {
-  const key = process.env.GEMINI_API_KEY || "";
-  if (!genAIInstance || genAIInstance.apiKey !== key) {
+  const key = (process.env.GEMINI_API_KEY || "").trim();
+  if (!genAIInstance) {
     genAIInstance = new GoogleGenerativeAI(key);
   }
   return genAIInstance;
@@ -138,10 +138,8 @@ app.get('/api/debug-env', async (req, res) => {
 
         const genAI = getGenAI();
         const modelsToTry = [
-          "gemini-3.1-pro-preview",
-          "gemini-3-flash-preview",
-          "gemini-1.5-flash-latest",
-          "gemini-1.5-flash"
+          "gemini-flash-latest",
+          "gemini-3.1-pro-preview"
         ];
         
         let workingModels: string[] = [];
@@ -233,10 +231,8 @@ app.post('/api/chat', async (req, res) => {
       
       // Prioritize models that are most likely to be available and stable
       const modelsToTry = [
-        "gemini-3.1-pro-preview",
-        "gemini-3-flash-preview",
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-flash"
+        "gemini-flash-latest",
+        "gemini-3.1-pro-preview"
       ];
       
       console.log(`[Chat] Received request with ${contents?.length || 0} messages.`);
