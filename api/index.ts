@@ -137,33 +137,11 @@ app.get('/api/debug-env', async (req, res) => {
         }
 
         const genAI = getGenAI();
-        const modelsToTry = [
+        geminiStatus = "Key present (AI test disabled for security)";
+        availableModels = [
           "gemini-flash-latest",
           "gemini-3.1-pro-preview"
         ];
-        
-        let workingModels: string[] = [];
-        let lastErr = null;
-        for (const m of modelsToTry) {
-          try {
-            const testModel = genAI.getGenerativeModel({ model: m });
-            const result = await testModel.generateContent("hi");
-            const response = await result.response;
-            if (response.text()) {
-              workingModels.push(m);
-            }
-          } catch (e: any) {
-            lastErr = e.message;
-          }
-        }
-        
-        if (workingModels.length > 0) {
-          geminiStatus = `working_models:${workingModels.join(',')}`;
-          availableModels = workingModels;
-        } else {
-          geminiStatus = "all_failed";
-          geminiError = lastErr;
-        }
       }
     } else {
       geminiStatus = "missing_key";
@@ -178,18 +156,7 @@ app.get('/api/debug-env', async (req, res) => {
   const anthropicKey = process.env.ANTHROPIC_API_KEY || "";
   
   if (anthropicKey) {
-    try {
-      const anthropic = getAnthropic();
-      await anthropic.messages.create({
-        model: "claude-3-haiku-20240307",
-        max_tokens: 10,
-        messages: [{ role: "user", content: "hi" }]
-      });
-      claudeStatus = "working";
-    } catch (e: any) {
-      claudeStatus = "failed";
-      claudeError = e.message;
-    }
+    claudeStatus = "Key present (AI test disabled for security)";
   } else {
     claudeStatus = "missing_key";
   }
@@ -215,12 +182,44 @@ app.get('/api/debug-env', async (req, res) => {
 
 app.post('/api/chat', async (req, res) => {
   try {
-    const { contents, systemInstruction } = req.body;
+    const { contents, systemInstruction, userId } = req.body;
     const geminiKey = (process.env.GEMINI_API_KEY || "").trim();
     
     let lastError: any = null;
     let successfulModel = "";
     const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
+
+    // --- STRICT POLICY ENFORCEMENT ---
+    if (userId) {
+      try {
+        const firestore = getDb();
+        const userDoc = await firestore.collection('users').doc(userId).get();
+        if (userDoc.exists) {
+          const userData = userDoc.data();
+          const isSubscribed = userData.isSubscribed || false;
+          const freeMessagesUsed = userData.freeMessagesUsed || 0;
+          const expiryDate = userData.expiryDate ? userData.expiryDate.toDate() : null;
+          const isExpired = expiryDate ? expiryDate.getTime() < new Date().getTime() : false;
+
+          if ((!isSubscribed || isExpired) && freeMessagesUsed >= 3) {
+            console.warn(`[Chat] Blocked user ${userId} - Limit reached.`);
+            return res.status(403).json({ 
+              error: "Limit reached", 
+              message: "You have used your 3 free messages. Please subscribe to continue." 
+            });
+          }
+        }
+      } catch (dbErr: any) {
+        console.error("[Chat] Firestore check failed:", dbErr.message);
+        // We continue if DB check fails to avoid blocking legitimate users, 
+        // but in a production app you might want to be stricter.
+      }
+    } else {
+      // If no userId is provided, we block it to ensure strict enforcement
+      console.warn("[Chat] Blocked request - No userId provided.");
+      return res.status(401).json({ error: "Unauthorized", message: "User identification required." });
+    }
+    // ---------------------------------
 
     if (!geminiKey || geminiKey.length < 30) {
       console.error("[Chat] GEMINI_API_KEY is missing or too short.");
@@ -274,6 +273,15 @@ app.post('/api/chat', async (req, res) => {
             if (text) {
               successfulModel = modelName;
               console.log(`[Chat] Success with model: ${modelName}`);
+
+              // Increment count in background
+              if (userId) {
+                const firestore = getDb();
+                firestore.collection('users').doc(userId).update({
+                  freeMessagesUsed: FieldValue.increment(1)
+                }).catch((e: any) => console.error("[Chat] Increment failed:", e.message));
+              }
+
               return res.json({ text, modelUsed: modelName });
             }
           } catch (err: any) {
@@ -330,6 +338,15 @@ app.post('/api/chat', async (req, res) => {
             const text = response.content[0].type === 'text' ? response.content[0].text : "";
             if (text) {
               console.log(`[Chat] Success with Claude fallback (${claudeModel})!`);
+
+              // Increment count in background
+              if (userId) {
+                const firestore = getDb();
+                firestore.collection('users').doc(userId).update({
+                  freeMessagesUsed: FieldValue.increment(1)
+                }).catch((e: any) => console.error("[Chat] Increment failed:", e.message));
+              }
+
               return res.json({ text, modelUsed: claudeModel });
             }
           } catch (err: any) {

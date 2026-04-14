@@ -605,6 +605,23 @@ export default function App() {
     }
   };
 
+  const handleSkipTalk = async () => {
+    setIsBusy(true);
+    try {
+      let currentUser = user;
+      if (!currentUser) {
+        currentUser = await handleLogin();
+      }
+      if (currentUser) {
+        setScreen('chat');
+      }
+    } catch (err) {
+      console.error("Skip talk error:", err);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
   const sendMessage = async (txt: string = input) => {
     const msg = txt.trim();
     if (!msg || isBusy) return;
@@ -654,7 +671,7 @@ export default function App() {
       
       CRITICAL: You MUST respond ONLY in ${targetLangName}. Stay in character as Saathi at all times.`;
 
-      let aiResponse: { text: string; modelUsed: string } | null = null;
+      let aiResponse: { text: string; modelUsed: string; fromBackend?: boolean } | null = null;
       let errors: string[] = [];
 
       // 1. Try Backend FIRST (Most reliable, no CORS issues)
@@ -669,7 +686,8 @@ export default function App() {
               ...history,
               { role: 'user', parts: [{ text: anchoredMsg }] }
             ],
-            systemInstruction: fullPrompt
+            systemInstruction: fullPrompt,
+            userId: user?.uid
           })
         });
 
@@ -677,7 +695,7 @@ export default function App() {
         if (res.ok && contentType && contentType.includes("application/json")) {
           const data = await res.json();
           if (data.text) {
-            aiResponse = { text: data.text, modelUsed: data.modelUsed || 'backend' };
+            aiResponse = { text: data.text, modelUsed: data.modelUsed || 'backend', fromBackend: true };
           }
         } else {
           const text = await res.text().catch(() => "No body");
@@ -764,8 +782,8 @@ export default function App() {
         const newCount = subscribed ? freeCount : freeCount + 1;
         setFreeCount(newCount);
 
-        // Update Firestore usage
-        if (user) {
+        // Update Firestore usage - ONLY if not handled by backend
+        if (user && !aiResponse.fromBackend) {
           try {
             const userRef = doc(db, 'users', user.uid);
             await updateDoc(userRef, {
@@ -908,7 +926,7 @@ export default function App() {
               </div>
 
               <button className="btn-primary" onClick={handleBegin}>{t.wB1}</button>
-              <button className="btn-ghost" onClick={() => setScreen('chat')}>{t.wB2}</button>
+              <button className="btn-ghost" onClick={handleSkipTalk} disabled={isBusy}>{isBusy ? '...' : t.wB2}</button>
             </div>
           </motion.div>
         )}

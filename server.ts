@@ -8,7 +8,7 @@ import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 import admin from 'firebase-admin';
-import { getFirestore } from 'firebase-admin/firestore';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import fs from 'fs';
 
 dotenv.config();
@@ -113,11 +113,39 @@ async function startServer() {
   
   app.post('/api/chat', async (req, res) => {
     try {
-      const { contents, systemInstruction } = req.body;
+      const { contents, systemInstruction, userId } = req.body;
       const geminiKey = (process.env.GEMINI_API_KEY || "").trim();
       
       let lastError: any = null;
       const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
+
+      // --- STRICT POLICY ENFORCEMENT ---
+      if (userId) {
+        try {
+          const userDoc = await db.collection('users').doc(userId).get();
+          if (userDoc.exists) {
+            const userData = userDoc.data();
+            const isSubscribed = userData.isSubscribed || false;
+            const freeMessagesUsed = userData.freeMessagesUsed || 0;
+            const expiryDate = userData.expiryDate ? userData.expiryDate.toDate() : null;
+            const isExpired = expiryDate ? expiryDate.getTime() < new Date().getTime() : false;
+
+            if ((!isSubscribed || isExpired) && freeMessagesUsed >= 3) {
+              console.warn(`[Chat] Blocked user ${userId} - Limit reached.`);
+              return res.status(403).json({ 
+                error: "Limit reached", 
+                message: "You have used your 3 free messages. Please subscribe to continue." 
+              });
+            }
+          }
+        } catch (dbErr: any) {
+          console.error("[Chat] Firestore check failed:", dbErr.message);
+        }
+      } else {
+        console.warn("[Chat] Blocked request - No userId provided.");
+        return res.status(401).json({ error: "Unauthorized", message: "User identification required." });
+      }
+      // ---------------------------------
 
       if (geminiKey && geminiKey.length >= 30) {
         const genAI = getGenAI();
@@ -157,6 +185,14 @@ async function startServer() {
             
             if (text) {
               console.log(`[Server Chat] Success with Gemini: ${modelName}`);
+
+              // Increment count in background
+              if (userId) {
+                db.collection('users').doc(userId).update({
+                  freeMessagesUsed: FieldValue.increment(1)
+                }).catch((e: any) => console.error("[Server Chat] Increment failed:", e.message));
+              }
+
               return res.json({ text, modelUsed: modelName });
             }
           } catch (err: any) {
@@ -195,6 +231,14 @@ async function startServer() {
             const text = response.content[0].type === 'text' ? response.content[0].text : "";
             if (text) {
               console.log(`[Server Chat] Success with Claude: ${modelName}`);
+
+              // Increment count in background
+              if (userId) {
+                db.collection('users').doc(userId).update({
+                  freeMessagesUsed: FieldValue.increment(1)
+                }).catch((e: any) => console.error("[Server Chat] Increment failed:", e.message));
+              }
+
               return res.json({ text, modelUsed: `claude:${modelName}` });
             }
           } catch (err: any) {
