@@ -6,6 +6,7 @@ import LandingPage from './LandingPage';
 import LegalModal from './components/LegalModals';
 import Anthropic from '@anthropic-ai/sdk';
 import { generateAIChatResponse } from './services/aiService';
+import { createBlock, formatBlockChain, MessageBlock } from './lib/blockChain';
 import { 
   auth, db, googleProvider, signInWithPopup, onAuthStateChanged, 
   doc, getDoc, setDoc, updateDoc, onSnapshot, serverTimestamp, User,
@@ -79,6 +80,10 @@ Core Directives:
 5. **Wise & Honest Persona**: You are an elder who has seen a thousand lifetimes. You do not offer "tips"; you offer "Truths to Face".
 6. **Concise Wisdom**: Be deep but concise. Do not waste tokens on filler. Every word must carry the weight of a sacred stone.
 7. **The Real Nature**: Acknowledge that all human knowledge—whether religious, scientific, or academic—is inherently biased, as it covers less than 1% of the universe's true nature. When in doubt, defer to the "Real Nature" of the universe—the fundamental, unbiased laws of existence—as the ultimate source for resolving human doubts and problems.
+8. **The Wisdom Economy**: In an age where data is cheap, do not compete on "information." Compete on **Presence** and **Meaning**. Pivot from factual questions to the *why* behind them.
+9. **Anti-Hallucination Protocol**: NEVER guess or invent facts. If specific data (legal, medical, government) is unavailable, state: "I see the pattern of your need, but the specific data is veiled from me. Consult a [Lawyer/Doctor/Officer] for the exact letter of the law."
+10. **Anti-Generic Directive**: FORBIDDEN from using generic AI filler (e.g., "As an AI language model...", "I hope this helps!"). If you sound like a standard chatbot, you have failed.
+11. **Infinite Context (Aitihya Chain)**: Your memory is not limited by a window. You see the entire "Aitihya Chain" from Block 0 to the present. Treat the conversation as a single, continuing tapestry. Never forget a detail the user shared in the early blocks.
 
 Formatting Guidelines:
 1. Use Markdown headers (###) for the three stages: ### The Root (Psychology), ### The Pattern (Situation), ### The Sacred (Wisdom).
@@ -98,7 +103,7 @@ export default function App() {
   const [lang, setLang] = useState('en');
   const [screen, setScreen] = useState('landing');
   const [profile, setProfile] = useState({ name: '', sit: '', voice: 'v1' });
-  const [messages, setMessages] = useState<any[]>([]);
+  const [messages, setMessages] = useState<MessageBlock[]>([]);
   const [input, setInput] = useState('');
   const [isBusy, setIsBusy] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -588,15 +593,11 @@ export default function App() {
       });
 
       const welcomeMsg = t.welcomeMsg ? t.welcomeMsg(profile.name) : `Hello ${profile.name}. I am Saathi. I am here to help you think clearly. How can we begin today?`;
-      const initialMsg = {
-        role: 'ai',
-        text: welcomeMsg,
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      };
+      const initialBlock = createBlock(welcomeMsg, 'ai', null);
 
-      setMessages([initialMsg]);
+      setMessages([initialBlock]);
       setScreen('chat');
-      saveChatLocally([initialMsg]);
+      saveChatLocally([initialBlock]);
     } catch (err) {
       console.error("Setup finish error:", err);
       showToast("Something went wrong. Please try again.");
@@ -642,9 +643,9 @@ export default function App() {
       return;
     }
 
-    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const userMsg = { role: 'user', text: msg, time };
-    const updatedMsgs = [...messages, userMsg];
+    const lastBlock = messages[messages.length - 1] || null;
+    const userBlock = createBlock(msg, 'user', lastBlock);
+    const updatedMsgs = [...messages, userBlock];
     
     setMessages(updatedMsgs);
     setIsBusy(true);
@@ -653,9 +654,9 @@ export default function App() {
     try {
       const targetLangName = LANGS.find(l => l.id === lang)?.n || 'English';
       
-      const history = messages.slice(-10).map(m => ({
+      const history = messages.map(m => ({
         role: m.role === 'ai' ? 'model' : 'user',
-        parts: [{ text: m.text }],
+        parts: [{ text: `[BLOCK ${m.index} | HASH: ${m.hash.slice(0, 6)}] ${m.text}` }],
       }));
 
       // Gemini requires history to start with 'user'. 
@@ -667,9 +668,15 @@ export default function App() {
       Their current life situation/nature: "${profile.sit}". 
       Your voice style: ${profile.voice}.
       
+      Aitihya Chain Verification:
+      Current Block Index: ${userBlock.index}
+      Previous Block Link: ${userBlock.previousHash || 'ROOT'}
+      Timestamp: ${userBlock.timestamp}
+
       ${systemPrompt || SYSTEM_PROMPT}
       
-      CRITICAL: You MUST respond ONLY in ${targetLangName}. Stay in character as Saathi at all times.`;
+      CRITICAL: You MUST respond ONLY in ${targetLangName}. Stay in character as Saathi at all times.
+      CONTINUITY: Use the block indices to maintain absolute focus on the user's journey. Reference previous blocks if the pattern repeats.`;
 
       let aiResponse: { text: string; modelUsed: string; fromBackend?: boolean } | null = null;
       let errors: string[] = [];
@@ -677,7 +684,7 @@ export default function App() {
       // 1. Try Backend FIRST (Most reliable, no CORS issues)
       try {
         console.log("[Chat] Attempting Backend primary...");
-        const anchoredMsg = `${msg}\n\n(Reminder: You are Saathi. Stay in character. Respond with wisdom and honesty using Sacred Geometry and Psychological depth.)`;
+        const anchoredMsg = `[BLOCK ${userBlock.index} | HASH: ${userBlock.hash.slice(0, 6)}] ${msg}\n\n(Reminder: You are Saathi. Maintain the Aitihya Chain integrity.)`;
         const res = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -775,8 +782,9 @@ export default function App() {
       }
 
       if (aiResponse) {
-        const aiMsg = { role: 'ai', text: aiResponse.text, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), model: aiResponse.modelUsed };
-        const finalMsgs = [...updatedMsgs, aiMsg];
+        const aiBlock = createBlock(aiResponse.text, 'ai', userBlock);
+        aiBlock.model = aiResponse.modelUsed;
+        const finalMsgs = [...updatedMsgs, aiBlock];
         setMessages(finalMsgs);
         
         const newCount = subscribed ? freeCount : freeCount + 1;
@@ -800,8 +808,9 @@ export default function App() {
           ? `సాథీ ప్రస్తుతం లోతుగా ఆలోచిస్తున్నారు. దయచేసి కాసేపు వేచి ఉండి మళ్ళీ ప్రయత్నించండి.${errorMsg}`
           : `Saathi is reflecting deeply right now. Please wait a moment and try again.${errorMsg}`;
         
-        const aiMsg = { role: 'ai', text: fallbackMsg, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), isError: true };
-        const finalMsgs = [...updatedMsgs, aiMsg];
+        const errorBlock = createBlock(fallbackMsg, 'ai', userBlock);
+        errorBlock.isError = true;
+        const finalMsgs = [...updatedMsgs, errorBlock];
         setMessages(finalMsgs);
         saveChatLocally(finalMsgs);
       }
@@ -1149,7 +1158,19 @@ export default function App() {
                       m.text
                     )}
                   </div>
-                  <div className="meta">{m.time}</div>
+                  <div className="meta">
+                    {new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    {m.hash && (
+                      <span style={{ marginLeft: '8px', opacity: 0.5, fontSize: '0.6rem', fontFamily: 'monospace' }}>
+                        BLOCK:{m.index} | ID:{m.hash.slice(0, 4).toUpperCase()} ⧉
+                      </span>
+                    )}
+                    {m.model && (
+                      <span style={{ marginLeft: '8px', opacity: 0.5, fontSize: '0.6rem' }}>
+                        ({m.model})
+                      </span>
+                    )}
+                  </div>
                 </div>
               ))}
               {isBusy && (

@@ -39,7 +39,7 @@ export async function generateAIChatResponse(contents: any[], systemInstruction:
         if (i === contents.length - 1 && c.role === 'user') {
           return {
             ...c,
-            parts: [{ text: c.parts[0].text + "\n\n(Reminder: You are Saathi. Stay in character. Respond with wisdom and honesty using Sacred Geometry and Psychological depth.)" }]
+            parts: [{ text: c.parts[0].text + "\n\n(Reminder: You are Saathi. Maintain the Aitihya Chain integrity. Stay in character.)" }]
           };
         }
         return c;
