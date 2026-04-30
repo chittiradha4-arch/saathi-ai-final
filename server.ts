@@ -120,6 +120,7 @@ async function startServer() {
       const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
 
       // --- STRICT POLICY ENFORCEMENT ---
+      let limitReached = false;
       if (userId) {
         try {
           const userDoc = await db.collection('users').doc(userId).get();
@@ -132,18 +133,22 @@ async function startServer() {
 
             if ((!isSubscribed || isExpired) && freeMessagesUsed >= 3) {
               console.warn(`[Chat] Blocked user ${userId} - Limit reached.`);
-              return res.status(403).json({ 
-                error: "Limit reached", 
-                message: "You have used your 3 free messages. Please subscribe to continue." 
-              });
+              limitReached = true;
             }
           }
         } catch (dbErr: any) {
-          console.error("[Chat] Firestore check failed:", dbErr.message);
+          console.error("[Chat] Firestore check failed (Permission issue?):", dbErr.message);
         }
       } else {
         console.warn("[Chat] Blocked request - No userId provided.");
         return res.status(401).json({ error: "Unauthorized", message: "User identification required." });
+      }
+
+      if (limitReached) {
+        return res.status(403).json({ 
+          error: "Limit reached", 
+          message: "You have used your 3 free messages. Please subscribe to continue." 
+        });
       }
       // ---------------------------------
 

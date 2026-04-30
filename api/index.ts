@@ -190,6 +190,9 @@ app.post('/api/chat', async (req, res) => {
     const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
 
     // --- STRICT POLICY ENFORCEMENT ---
+    let canProceed = true;
+    let limitReached = false;
+
     if (userId) {
       try {
         const firestore = getDb();
@@ -203,21 +206,24 @@ app.post('/api/chat', async (req, res) => {
 
           if ((!isSubscribed || isExpired) && freeMessagesUsed >= 3) {
             console.warn(`[Chat] Blocked user ${userId} - Limit reached.`);
-            return res.status(403).json({ 
-              error: "Limit reached", 
-              message: "You have used your 3 free messages. Please subscribe to continue." 
-            });
+            limitReached = true;
           }
         }
       } catch (dbErr: any) {
-        console.error("[Chat] Firestore check failed:", dbErr.message);
-        // We continue if DB check fails to avoid blocking legitimate users, 
-        // but in a production app you might want to be stricter.
+        console.error("[Chat] Firestore check failed (Permission issue?):", dbErr.message);
+        // CRITICAL: We do NOT set limitReached to true here. 
+        // If we can't verify the limit, we let the user chat for a better UX.
       }
     } else {
-      // If no userId is provided, we block it to ensure strict enforcement
       console.warn("[Chat] Blocked request - No userId provided.");
       return res.status(401).json({ error: "Unauthorized", message: "User identification required." });
+    }
+
+    if (limitReached) {
+      return res.status(403).json({ 
+        error: "Limit reached", 
+        message: "You have used your 3 free messages. Please subscribe to continue." 
+      });
     }
     // ---------------------------------
 

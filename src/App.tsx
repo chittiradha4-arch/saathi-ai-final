@@ -124,6 +124,19 @@ export default function App() {
 
   const getStorageKey = (uid?: string) => uid ? `saathi_chat_${uid}` : 'saathi_chat_guest';
 
+  // ── SCREEN LOCK (ANTI-COPY) ──
+  useEffect(() => {
+    const prevent = (e: any) => e.preventDefault();
+    document.addEventListener('contextmenu', prevent);
+    document.addEventListener('copy', prevent);
+    document.addEventListener('selectstart', prevent);
+    return () => {
+      document.removeEventListener('contextmenu', prevent);
+      document.removeEventListener('copy', prevent);
+      document.removeEventListener('selectstart', prevent);
+    };
+  }, []);
+
   const chatEndRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
 
